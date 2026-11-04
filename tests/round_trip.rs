@@ -3,6 +3,8 @@
 //!
 //! With `CERTVAL_CMS_OPENSSL` set to an `openssl` command (OpenSSL 3), the same messages are also
 //! decrypted by `openssl cms -decrypt`, an implementation that shares no code with this crate.
+//! AuthEnvelopedData with authenticated attributes needs OpenSSL 3.6.4 or later, the first to tag
+//! them as RFC 5083 does; with an older `openssl` those messages are skipped.
 
 use std::path::Path;
 use std::process::Command;
@@ -340,12 +342,25 @@ fn openssl_decrypts_what_is_built_here() {
     )
     .unwrap();
 
+    // Before 3.6.4, OpenSSL tags AuthEnvelopedData's authAttrs [2] rather than RFC 5083's [1], so it
+    // cannot read a message that carries them.
+    let reads_auth_attrs = openssl_version(&openssl) >= (3, 6, 4);
+    if !reads_auth_attrs {
+        eprintln!(
+            "skipped for authenticated attributes: {openssl} is older than OpenSSL 3.6.4, the \
+             first to read AuthEnvelopedData's authAttrs as RFC 5083 tags them"
+        );
+    }
+
     let mut messages = vec![];
     for alg in CBC {
         messages.push((format!("{alg:?}"), enveloped(&key, alg)));
     }
     for alg in GCM {
         for with_attrs in [false, true] {
+            if with_attrs && !reads_auth_attrs {
+                continue;
+            }
             messages.push((
                 format!("{alg:?} attrs={with_attrs}"),
                 auth_enveloped(&key, alg, with_attrs),
@@ -353,12 +368,36 @@ fn openssl_decrypts_what_is_built_here() {
         }
     }
     for (name, ci) in messages {
-        let decrypted = openssl_decrypt(&openssl, dir.path(), &key_path, &ci.to_der().unwrap());
+        let decrypted = openssl_decrypt(
+            &openssl,
+            dir.path(),
+            &key_path,
+            &ci.to_der().unwrap(),
+            &name,
+        );
         assert_eq!(decrypted, MESSAGE, "{name}");
     }
 }
 
-fn openssl_decrypt(openssl: &str, dir: &Path, key_path: &Path, der: &[u8]) -> Vec<u8> {
+/// The version `openssl version` reports, as (major, minor, patch); zeros where it cannot be read.
+fn openssl_version(openssl: &str) -> (u32, u32, u32) {
+    let output = Command::new(openssl).arg("version").output().unwrap();
+    let version = String::from_utf8_lossy(&output.stdout);
+    // "OpenSSL 3.6.5 29 Sep 2026 (Library: ...)"
+    let mut numbers = version
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .split('.')
+        .map(|n| n.parse::<u32>().unwrap_or(0));
+    (
+        numbers.next().unwrap_or(0),
+        numbers.next().unwrap_or(0),
+        numbers.next().unwrap_or(0),
+    )
+}
+
+fn openssl_decrypt(openssl: &str, dir: &Path, key_path: &Path, der: &[u8], name: &str) -> Vec<u8> {
     let input = dir.join("message.der");
     std::fs::write(&input, der).unwrap();
     let output = Command::new(openssl)
@@ -370,7 +409,7 @@ fn openssl_decrypt(openssl: &str, dir: &Path, key_path: &Path, der: &[u8]) -> Ve
         .unwrap();
     assert!(
         output.status.success(),
-        "openssl: {}",
+        "openssl, {name}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     output.stdout
