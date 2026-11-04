@@ -82,3 +82,52 @@ jobs:
         env:
           CERTVAL_CMS_OPENSSL: openssl
         run: cargo test -- --nocapture
+
+  # Ubuntu 24.04's OpenSSL is 3.0, so the job above skips the openssl decryption of ML-KEM recipients
+  # (OpenSSL 3.6) and of AuthEnvelopedData with authenticated attributes (OpenSSL 3.6.4, the first to
+  # tag authAttrs as RFC 5083 does). This one builds an OpenSSL release with both and gives the tests
+  # its openssl command, and fails if any openssl check is skipped. The build is cached by version.
+  test-openssl-3-6:
+    runs-on: ubuntu-24.04
+    env:
+      OPENSSL_VERSION: 3.6.5
+      OPENSSL_SHA256: a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cms
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the OpenSSL build
+        id: openssl-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/openssl
+          key: openssl-${{ env.OPENSSL_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - name: Build OpenSSL
+        if: steps.openssl-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl -fsSL -o openssl.tar.gz \
+            "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+          echo "${OPENSSL_SHA256}  openssl.tar.gz" | sha256sum -c -
+          tar xzf openssl.tar.gz
+          cd "openssl-${OPENSSL_VERSION}"
+          # The rpath lets the openssl command find its own libraries without LD_LIBRARY_PATH,
+          # which would otherwise reach cargo and everything else in the test step.
+          ./Configure --prefix="$HOME/openssl" --libdir=lib "-Wl,-rpath,$HOME/openssl/lib"
+          make -j"$(nproc)"
+          make install_sw
+
+      - name: Run the tests against OpenSSL ${{ env.OPENSSL_VERSION }}
+        env:
+          CERTVAL_CMS_OPENSSL: /home/runner/openssl/bin/openssl
+        run: |
+          set -o pipefail
+          "$CERTVAL_CMS_OPENSSL" version
+          cargo test -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
+          if grep -n '^skipped' "$RUNNER_TEMP/test.log"; then
+            echo "an openssl check was skipped; this job exists to run them all"
+            exit 1
+          fi
