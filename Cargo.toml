@@ -1,0 +1,59 @@
+[package]
+name = "certval-cms"
+version = "0.1.0-rc.1"
+description = """
+Cryptographic Message Syntax (CMS) for certval. Builds EnvelopedData and AuthEnvelopedData with
+content encryption performed by a pluggable implementation, so a message can be encrypted with the
+platform's validated cryptographic module rather than an in-process software implementation.
+"""
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/carl-wallace/certval-cms"
+categories = ["cryptography", "no-std"]
+keywords = ["cms", "pkcs7", "x509", "certval", "encryption"]
+readme = "README.md"
+edition = "2021"
+rust-version = "1.88"
+include = ["src/**/*.rs", "README.md", "CHANGELOG.md", "LICENSE-APACHE", "LICENSE-MIT"]
+
+[dependencies]
+# The ASN.1 types, and the RecipientInfoBuilder trait and recipient builders (`builder`). Content
+# encryption is this crate's own, so that it can be routed to a provider.
+cms = { version = "0.3.0-rc.0", features = ["builder"] }
+const-oid = { version = "0.10.2", features = ["db"] }
+der = { version = "0.8.1", features = ["alloc", "derive", "oid"] }
+spki = "0.8.0"
+x509-cert = { version = "0.3.0", default-features = false }
+zeroize = { version = "1.8.1", features = ["alloc"] }
+
+# The software implementations: content encryption, RSA key transport, ECDH key agreement with
+# the X9.63 KDF, ML-KEM with HKDF, and AES key wrap.
+aes = "0.9.1"
+aes-gcm = "0.11.0"
+aes-kw = "0.3.1"
+ansi-x963-kdf = "=0.1.0-rc.2"
+cbc = { version = "0.2.1", features = ["alloc", "block-padding"] }
+elliptic-curve = { version = "0.14.3", default-features = false, features = ["arithmetic", "ecdh", "sec1"] }
+getrandom = { version = "0.4.1", features = ["sys_rng"] }
+hkdf = "0.13.0"
+ml-kem = "0.3.3"
+p256 = { version = "0.14.0", default-features = false, features = ["ecdh"] }
+p384 = { version = "0.14.0", default-features = false, features = ["ecdh"] }
+p521 = { version = "0.14.0", default-features = false, features = ["ecdh"] }
+rsa = { version = "=0.10.0-rc.19", default-features = false, features = ["encoding"] }
+sha1 = { version = "0.11.0", default-features = false, features = ["oid"] }
+sha2 = { version = "0.11.0", default-features = false, features = ["oid"] }
+# The random number generator trait cms's recipient builders take.
+rand_core = "0.10.1"
+
+[dev-dependencies]
+# The tests decrypt what is built, with RustCrypto and with the openssl command.
+ml-kem = { version = "0.3.3", features = ["pkcs8", "pem"] }
+p256 = { version = "0.14.0", features = ["ecdh", "pem"] }
+p384 = { version = "0.14.0", features = ["ecdh", "pem"] }
+p521 = { version = "0.14.0", features = ["ecdh", "pem"] }
+rsa = "=0.10.0-rc.19"
+tempfile = "3.27.0"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

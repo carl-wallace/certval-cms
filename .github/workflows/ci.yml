@@ -1,0 +1,84 @@
+name: certval-cms
+
+on:
+  pull_request:
+  push:
+    branches: main
+  # Manual re-runs via `gh workflow run ci.yml` (available once this file is
+  # on the default branch).
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: certval-cms
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: "-Dwarnings"
+
+# Cancels CI jobs when new commits are pushed to a PR branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        rust:
+          - 1.88.0 # MSRV, matching certval
+          - stable
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cms
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - run: cargo build --all-targets
+      - run: cargo build --all-targets --all-features
+
+  # Lints run on stable only, deliberately not across the build matrix: clippy's diagnostics differ
+  # between toolchains, so linting against the MSRV pin reports on a compiler nobody develops with.
+  # The pre-commit hook runs the same commands locally so they fail before a push rather than in
+  # CI. It is an early warning, not a replacement for these jobs.
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cms
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Not installed by default.
+          components: clippy
+      - run: cargo clippy --all-targets
+      - run: cargo clippy --all-targets --all-features
+
+  # A job of its own so it can be a required check without making clippy one: each Rust release
+  # adds lints, and a required clippy would fail unrelated pull requests.
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cms
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Not installed by default.
+          components: rustfmt
+      - run: cargo fmt --check
+
+  # The round trips, plus decryption of the same messages by the runner's `openssl cms`.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cms
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run the tests
+        env:
+          CERTVAL_CMS_OPENSSL: openssl
+        run: cargo test -- --nocapture
