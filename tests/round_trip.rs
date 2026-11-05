@@ -16,7 +16,7 @@ use aes_gcm::{
 };
 use cbc::cipher::{block_padding::Pkcs7, BlockCipherDecrypt, BlockModeDecrypt, KeyIvInit};
 use certval_cms::{
-    AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm, EncryptedContent,
+    AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm, ContentEncryptionOutput,
     EnvelopedDataBuilder, Error, GcmParameters,
 };
 use cms::{
@@ -293,7 +293,7 @@ fn declines(
     _: ContentEncryptionAlgorithm,
     _: &[u8],
     _: Option<&[u8]>,
-) -> certval_cms::Result<EncryptedContent> {
+) -> certval_cms::Result<ContentEncryptionOutput> {
     Err(Error::Unrecognized)
 }
 

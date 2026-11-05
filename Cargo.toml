@@ -15,9 +15,23 @@ edition = "2021"
 rust-version = "1.89"
 include = ["src/**/*.rs", "README.md", "CHANGELOG.md", "LICENSE-APACHE", "LICENSE-MIT"]
 
+[features]
+# certval's software RSA signature verification, for SignedData signed with RSA when no provider in
+# the PkiEnvironment verifies RSA. Off by default, so that the application, not this crate, decides
+# which algorithms certval's software offers.
+rsa = ["certval/rsa"]
+# ML-DSA: signing with SoftwareSigningKey, and certval's software ML-DSA and SLH-DSA signature
+# verification.
+pqc = ["dep:ml-dsa", "certval/pqc"]
+
 [dependencies]
-# The ASN.1 types, and the RecipientInfoBuilder trait and recipient builders (`builder`). Content
-# encryption is this crate's own, so that it can be routed to a provider.
+# Certificate vetting: path building, validation, and revocation checked against what the
+# PkiEnvironment holds. `revocation` adds that local check without std or networking.
+certval = { version = "0.2.0-rc.1", default-features = false, features = ["revocation"] }
+
+# The ASN.1 types, and the RecipientInfoBuilder trait and recipient builders (`builder`), reused
+# unchanged. Content encryption is the one part not reused: it is implemented here so that it can be
+# routed to a provider.
 cms = { version = "0.3.0-rc.0", features = ["builder"] }
 const-oid = { version = "0.10.2", features = ["db"] }
 der = { version = "0.8.1", features = ["alloc", "derive", "oid"] }
@@ -32,27 +46,40 @@ aes-gcm = "0.11.0"
 aes-kw = "0.3.1"
 ansi-x963-kdf = "=0.1.0-rc.2"
 cbc = { version = "0.2.1", features = ["alloc", "block-padding"] }
-elliptic-curve = { version = "0.14.3", default-features = false, features = ["arithmetic", "ecdh", "sec1"] }
+elliptic-curve = { version = "0.14.3", default-features = false, features = ["alloc", "arithmetic", "ecdh", "pkcs8", "sec1"] }
 getrandom = { version = "0.4.1", features = ["sys_rng"] }
 hkdf = "0.13.0"
-ml-kem = "0.3.3"
-p256 = { version = "0.14.0", default-features = false, features = ["ecdh"] }
-p384 = { version = "0.14.0", default-features = false, features = ["ecdh"] }
-p521 = { version = "0.14.0", default-features = false, features = ["ecdh"] }
+ml-kem = { version = "0.3.3", features = ["pkcs8"] }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdh", "ecdsa", "pkcs8"] }
+p384 = { version = "0.14.0", default-features = false, features = ["ecdh", "ecdsa", "pkcs8"] }
+p521 = { version = "0.14.0", default-features = false, features = ["ecdh", "ecdsa", "pkcs8"] }
 rsa = { version = "=0.10.0-rc.19", default-features = false, features = ["encoding"] }
 sha1 = { version = "0.11.0", default-features = false, features = ["oid"] }
 sha2 = { version = "0.11.0", default-features = false, features = ["oid"] }
+ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc"], optional = true }
+# The Signer trait, for SignerCredential, which adapts any signer that knows its algorithm.
+signature = "3.0.0"
+# Constant-time examination of PKCS #1 v1.5 padding after a raw RSA decryption.
+subtle = { version = "2.6.1", default-features = false }
 # The random number generator trait cms's recipient builders take.
 rand_core = "0.10.1"
+log = "0.4.35"
 
 [dev-dependencies]
 # The tests decrypt what is built, with RustCrypto and with the openssl command.
 ml-kem = { version = "0.3.3", features = ["pkcs8", "pem"] }
-p256 = { version = "0.14.0", features = ["ecdh", "pem"] }
+p256 = { version = "0.14.0", features = ["ecdh", "ecdsa", "pem"] }
 p384 = { version = "0.14.0", features = ["ecdh", "pem"] }
 p521 = { version = "0.14.0", features = ["ecdh", "pem"] }
-rsa = "=0.10.0-rc.19"
+rsa = { version = "=0.10.0-rc.19", features = ["sha2"] }
 tempfile = "3.27.0"
+# The vetting and SignedData tests' PkiEnvironment: std so that the time of interest defaults to
+# now, and certval's software RSA so that RSA signatures have an implementation to verify them.
+certval = { version = "0.2.0-rc.1", default-features = false, features = ["revocation", "rsa", "std"] }
+ml-dsa = { version = "0.1.1", features = ["pkcs8"] }
+# Certificates for the decryption and vetting tests' recipients, issued by a P-256 test CA.
+x509-cert = { version = "0.3.0", features = ["builder", "pem", "std"] }
+der = { version = "0.8.1", features = ["flagset"] }
 
 [package.metadata.docs.rs]
 all-features = true

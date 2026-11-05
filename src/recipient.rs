@@ -11,6 +11,7 @@
 use alloc::{format, vec, vec::Vec};
 use core::marker::PhantomData;
 
+use certval::CertificationPathSettings;
 use cms::{
     builder::{RecipientInfoBuilder, RecipientInfoType},
     cert::IssuerAndSerialNumber,
@@ -20,12 +21,12 @@ use cms::{
         OriginatorIdentifierOrKey, OriginatorPublicKey, OtherRecipientInfo, RecipientEncryptedKey,
         RecipientIdentifier, RecipientInfo, RecipientKeyIdentifier, UserKeyingMaterial,
     },
-    kemri::{KemRecipientInfo, ID_ORI_KEM},
+    kemri::{CmsOriForKemOtherInfo, KemRecipientInfo, ID_ORI_KEM},
 };
 use const_oid::db::rfc5912::ID_CE_SUBJECT_KEY_IDENTIFIER;
 use der::{
     asn1::{Any, BitString, OctetString},
-    Decode, Encode,
+    Decode, Encode, Sequence,
 };
 use rand_core::CryptoRng;
 use spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
@@ -36,146 +37,57 @@ use crate::algorithms::{
 };
 use crate::environment::CmsEnvironment;
 use crate::error::{Error, Result};
+use crate::vetting::{KeyUse, Vetting};
 
-/// Key transport performed by a cryptographic implementation, registered with
-/// [`CmsEnvironment::add_encrypt_key_transport_callback`].
+/// The `ECC-CMS-SharedInfo` type, from RFC 5753, section 7.2.
 ///
-/// An implementation returns [`Error::Unrecognized`] for an algorithm or key it does not handle.
-/// A blanket implementation covers every function with a matching signature.
-pub trait EncryptKeyTransport {
-    /// Encrypts `cek` to the RSA key in `spki` with `alg`, returning the encryptedKey.
-    fn encrypt_key_transport(
-        &self,
-        env: &CmsEnvironment,
-        alg: KeyTransportAlgorithm,
-        spki: &SubjectPublicKeyInfoOwned,
-        cek: &[u8],
-    ) -> Result<Vec<u8>>;
+/// ```text
+/// ECC-CMS-SharedInfo ::= SEQUENCE {
+///   keyInfo         AlgorithmIdentifier,
+///   entityUInfo [0] EXPLICIT OCTET STRING OPTIONAL,
+///   suppPubInfo [2] EXPLICIT OCTET STRING }
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq, Sequence)]
+pub struct EccCmsSharedInfo {
+    /// The key wrap algorithm the derived key-encryption key is for.
+    pub key_info: AlgorithmIdentifierOwned,
+    /// The user keying material, when there is any.
+    #[asn1(context_specific = "0", tag_mode = "EXPLICIT", optional = "true")]
+    pub entity_u_info: Option<OctetString>,
+    /// The key-encryption key's length in bits, as four octets.
+    #[asn1(context_specific = "2", tag_mode = "EXPLICIT")]
+    pub supp_pub_info: OctetString,
 }
 
-impl<F> EncryptKeyTransport for F
-where
-    F: Fn(
-        &CmsEnvironment,
-        KeyTransportAlgorithm,
-        &SubjectPublicKeyInfoOwned,
-        &[u8],
-    ) -> Result<Vec<u8>>,
-{
-    fn encrypt_key_transport(
-        &self,
-        env: &CmsEnvironment,
-        alg: KeyTransportAlgorithm,
-        spki: &SubjectPublicKeyInfoOwned,
-        cek: &[u8],
-    ) -> Result<Vec<u8>> {
-        self(env, alg, spki, cek)
+/// The DER encoding of the `ECC-CMS-SharedInfo` (RFC 5753, section 7.2) that an
+/// [`EncryptKeyAgreement`](crate::EncryptKeyAgreement) implementation gives the X9.63 KDF as its shared info: `keyInfo` is the
+/// key wrap algorithm, `entityUInfo` the ukm when there is one, and `suppPubInfo` the
+/// key-encryption key's length in bits, as four octets.
+pub fn ecc_cms_shared_info(wrap: KeyWrapAlgorithm, ukm: Option<&[u8]>) -> Result<Vec<u8>> {
+    let kek_bits = (wrap.kek_len() as u32 * 8).to_be_bytes();
+    Ok(EccCmsSharedInfo {
+        key_info: wrap.algorithm_identifier(),
+        entity_u_info: match ukm {
+            Some(ukm) => Some(OctetString::new(ukm)?),
+            None => None,
+        },
+        supp_pub_info: OctetString::new(kek_bits)?,
     }
+    .to_der()?)
 }
 
-/// The output of key agreement for one recipient.
-pub struct KeyAgreeOutput {
-    /// The originator's ephemeral public key, an uncompressed SEC1 point.
-    pub ephemeral_public_key: Vec<u8>,
-    /// The content-encryption key, wrapped under the derived key-encryption key.
-    pub encrypted_key: Vec<u8>,
-}
-
-/// Key agreement performed by a cryptographic implementation, registered with
-/// [`CmsEnvironment::add_encrypt_key_agreement_callback`]: an ephemeral key pair on the recipient's
-/// curve, ECDH, the X9.63 KDF over the `ECC-CMS-SharedInfo` (RFC 5753, section 7.2), and the key
-/// wrap.
-///
-/// An implementation returns [`Error::Unrecognized`] for an algorithm or curve it does not handle.
-/// A blanket implementation covers every function with a matching signature.
-pub trait EncryptKeyAgreement {
-    /// Wraps `cek` for the EC key in `spki`. `ukm` is the user keying material, if any, which is
-    /// the entityUInfo of the shared info.
-    fn encrypt_key_agreement(
-        &self,
-        env: &CmsEnvironment,
-        alg: KeyAgreementAlgorithm,
-        wrap: KeyWrapAlgorithm,
-        spki: &SubjectPublicKeyInfoOwned,
-        ukm: Option<&[u8]>,
-        cek: &[u8],
-    ) -> Result<KeyAgreeOutput>;
-}
-
-impl<F> EncryptKeyAgreement for F
-where
-    F: Fn(
-        &CmsEnvironment,
-        KeyAgreementAlgorithm,
-        KeyWrapAlgorithm,
-        &SubjectPublicKeyInfoOwned,
-        Option<&[u8]>,
-        &[u8],
-    ) -> Result<KeyAgreeOutput>,
-{
-    fn encrypt_key_agreement(
-        &self,
-        env: &CmsEnvironment,
-        alg: KeyAgreementAlgorithm,
-        wrap: KeyWrapAlgorithm,
-        spki: &SubjectPublicKeyInfoOwned,
-        ukm: Option<&[u8]>,
-        cek: &[u8],
-    ) -> Result<KeyAgreeOutput> {
-        self(env, alg, wrap, spki, ukm, cek)
+/// The DER encoding of the `CMSORIforKEMOtherInfo` (RFC 9629, section 5) that an [`EncryptKem`](crate::EncryptKem)
+/// implementation gives the KDF as its info.
+pub fn kem_other_info(wrap: KeyWrapAlgorithm, ukm: Option<&[u8]>) -> Result<Vec<u8>> {
+    Ok(CmsOriForKemOtherInfo {
+        wrap: wrap.algorithm_identifier(),
+        kek_length: wrap.kek_len() as u16,
+        ukm: match ukm {
+            Some(ukm) => Some(OctetString::new(ukm)?),
+            None => None,
+        },
     }
-}
-
-/// The output of a KEM for one recipient.
-pub struct KemOutput {
-    /// The KEM ciphertext.
-    pub kem_ct: Vec<u8>,
-    /// The content-encryption key, wrapped under the derived key-encryption key.
-    pub encrypted_key: Vec<u8>,
-}
-
-/// A KEM performed by a cryptographic implementation, registered with
-/// [`CmsEnvironment::add_encrypt_kem_callback`]: encapsulation to the recipient's key, the KDF over
-/// the `CMSORIforKEMOtherInfo` (RFC 9629, section 5), and the key wrap. The KEM is the one the key in
-/// `spki` is for.
-///
-/// An implementation returns [`Error::Unrecognized`] for a KEM, KDF or wrap it does not handle. A
-/// blanket implementation covers every function with a matching signature.
-pub trait EncryptKem {
-    /// Wraps `cek` for the KEM key in `spki`.
-    fn encrypt_kem(
-        &self,
-        env: &CmsEnvironment,
-        kdf: KdfAlgorithm,
-        wrap: KeyWrapAlgorithm,
-        spki: &SubjectPublicKeyInfoOwned,
-        ukm: Option<&[u8]>,
-        cek: &[u8],
-    ) -> Result<KemOutput>;
-}
-
-impl<F> EncryptKem for F
-where
-    F: Fn(
-        &CmsEnvironment,
-        KdfAlgorithm,
-        KeyWrapAlgorithm,
-        &SubjectPublicKeyInfoOwned,
-        Option<&[u8]>,
-        &[u8],
-    ) -> Result<KemOutput>,
-{
-    fn encrypt_kem(
-        &self,
-        env: &CmsEnvironment,
-        kdf: KdfAlgorithm,
-        wrap: KeyWrapAlgorithm,
-        spki: &SubjectPublicKeyInfoOwned,
-        ukm: Option<&[u8]>,
-        cek: &[u8],
-    ) -> Result<KemOutput> {
-        self(env, kdf, wrap, spki, ukm, cek)
-    }
+    .to_der()?)
 }
 
 /// The recipient identifier for a certificate: its subject key identifier extension if it has
@@ -214,6 +126,7 @@ fn builder_error(e: Error) -> cms::builder::Error {
 /// A key transport (RSA) recipient, whose key wrapping goes through a [`CmsEnvironment`].
 pub struct KeyTransRecipient<'e, R: ?Sized> {
     env: &'e CmsEnvironment,
+    vetting: Vetting,
     rid: RecipientIdentifier,
     spki: SubjectPublicKeyInfoOwned,
     alg: KeyTransportAlgorithm,
@@ -230,6 +143,7 @@ impl<'e, R: ?Sized> KeyTransRecipient<'e, R> {
     ) -> Self {
         Self {
             env,
+            vetting: Vetting::NotPerformed,
             rid,
             spki,
             alg,
@@ -237,18 +151,28 @@ impl<'e, R: ?Sized> KeyTransRecipient<'e, R> {
         }
     }
 
-    /// The recipient a certificate identifies, by [`recipient_identifier`].
+    /// The recipient a certificate identifies, by [`recipient_identifier`]. With `settings`, the
+    /// certificate is vetted for key transport first; see [`CmsEnvironment::vet_certificate`].
     pub fn from_certificate(
         env: &'e CmsEnvironment,
         cert: &Certificate,
+        settings: Option<&CertificationPathSettings>,
         alg: KeyTransportAlgorithm,
     ) -> Result<Self> {
-        Ok(Self::new(
+        let vetting = env.vet_certificate(cert, KeyUse::KeyTransport, settings)?;
+        let mut recipient = Self::new(
             env,
             recipient_identifier(cert)?,
             subject_public_key_info(cert),
             alg,
-        ))
+        );
+        recipient.vetting = vetting;
+        Ok(recipient)
+    }
+
+    /// Whether the recipient's certificate was vetted.
+    pub fn vetting(&self) -> &Vetting {
+        &self.vetting
     }
 }
 
@@ -288,6 +212,7 @@ impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for KeyTransRecipient<'_, R> {
 /// A key agreement (ECDH) recipient, whose key wrapping goes through a [`CmsEnvironment`].
 pub struct KeyAgreeRecipient<'e, R: ?Sized> {
     env: &'e CmsEnvironment,
+    vetting: Vetting,
     rid: KeyAgreeRecipientIdentifier,
     spki: SubjectPublicKeyInfoOwned,
     alg: KeyAgreementAlgorithm,
@@ -321,6 +246,7 @@ impl<'e, R: ?Sized> KeyAgreeRecipient<'e, R> {
         };
         Self {
             env,
+            vetting: Vetting::NotPerformed,
             rid,
             spki,
             alg,
@@ -330,22 +256,32 @@ impl<'e, R: ?Sized> KeyAgreeRecipient<'e, R> {
         }
     }
 
-    /// The recipient a certificate identifies, by [`recipient_identifier`].
+    /// The recipient a certificate identifies, by [`recipient_identifier`]. With `settings`, the
+    /// certificate is vetted for key agreement first; see [`CmsEnvironment::vet_certificate`].
     pub fn from_certificate(
         env: &'e CmsEnvironment,
         cert: &Certificate,
+        settings: Option<&CertificationPathSettings>,
         alg: KeyAgreementAlgorithm,
         wrap: KeyWrapAlgorithm,
         ukm: Option<Vec<u8>>,
     ) -> Result<Self> {
-        Ok(Self::new(
+        let vetting = env.vet_certificate(cert, KeyUse::KeyAgreement, settings)?;
+        let mut recipient = Self::new(
             env,
             recipient_identifier(cert)?,
             subject_public_key_info(cert),
             alg,
             wrap,
             ukm,
-        ))
+        );
+        recipient.vetting = vetting;
+        Ok(recipient)
+    }
+
+    /// Whether the recipient's certificate was vetted.
+    pub fn vetting(&self) -> &Vetting {
+        &self.vetting
     }
 }
 
@@ -404,6 +340,7 @@ impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for KeyAgreeRecipient<'_, R> {
 /// A KEM (ML-KEM) recipient (RFC 9629), whose key wrapping goes through a [`CmsEnvironment`].
 pub struct KemRecipient<'e, R: ?Sized> {
     env: &'e CmsEnvironment,
+    vetting: Vetting,
     rid: RecipientIdentifier,
     spki: SubjectPublicKeyInfoOwned,
     kdf: KdfAlgorithm,
@@ -425,6 +362,7 @@ impl<'e, R: ?Sized> KemRecipient<'e, R> {
     ) -> Self {
         Self {
             env,
+            vetting: Vetting::NotPerformed,
             rid,
             spki,
             kdf,
@@ -434,22 +372,32 @@ impl<'e, R: ?Sized> KemRecipient<'e, R> {
         }
     }
 
-    /// The recipient a certificate identifies, by [`recipient_identifier`].
+    /// The recipient a certificate identifies, by [`recipient_identifier`]. With `settings`, the
+    /// certificate is vetted for a KEM first; see [`CmsEnvironment::vet_certificate`].
     pub fn from_certificate(
         env: &'e CmsEnvironment,
         cert: &Certificate,
+        settings: Option<&CertificationPathSettings>,
         kdf: KdfAlgorithm,
         wrap: KeyWrapAlgorithm,
         ukm: Option<Vec<u8>>,
     ) -> Result<Self> {
-        Ok(Self::new(
+        let vetting = env.vet_certificate(cert, KeyUse::Kem, settings)?;
+        let mut recipient = Self::new(
             env,
             recipient_identifier(cert)?,
             subject_public_key_info(cert),
             kdf,
             wrap,
             ukm,
-        ))
+        );
+        recipient.vetting = vetting;
+        Ok(recipient)
+    }
+
+    /// Whether the recipient's certificate was vetted.
+    pub fn vetting(&self) -> &Vetting {
+        &self.vetting
     }
 }
 

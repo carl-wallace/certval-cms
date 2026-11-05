@@ -1,4 +1,4 @@
-//! Content encryption: the symmetric half of EnvelopedData and AuthEnvelopedData.
+//! Content encryption: the symmetric facet of EnvelopedData and AuthEnvelopedData.
 //!
 //! [`EncryptContent`] is the interface a provider implements to perform content encryption with its
 //! own cryptographic module. An implementation generates the content-encryption key and the IV or
@@ -9,23 +9,27 @@
 //! the first that does not decline, as certval's `PkiEnvironment` consults its verification
 //! callbacks. [`encrypt_content_rust_crypto`] is the RustCrypto implementation.
 
-use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
+use alloc::{format, string::String, vec, vec::Vec};
 
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{
     aead::{consts::U12, inout::InOutBuf},
     AeadInOut, AesGcm, KeyInit,
 };
-use cbc::cipher::{block_padding::Pkcs7, BlockCipherEncrypt, BlockModeEncrypt, KeyIvInit};
-use const_oid::{db::rfc5911, ObjectIdentifier};
+use cbc::cipher::{
+    block_padding::Pkcs7, BlockCipherDecrypt, BlockCipherEncrypt, BlockModeDecrypt,
+    BlockModeEncrypt, KeyIvInit,
+};
 use der::{
     asn1::{Any, OctetString},
-    Sequence, Tag,
+    Decode, Encode, Sequence, Tag,
 };
 use spki::AlgorithmIdentifierOwned;
 use zeroize::Zeroizing;
 
+use crate::algorithms::ContentEncryptionAlgorithm;
 use crate::environment::CmsEnvironment;
+use crate::environment_traits::ContentEncryptionOutput;
 use crate::error::{Error, Result};
 
 /// Length in octets of the GCM nonce generated for a message, the length RFC 5084 recommends.
@@ -36,72 +40,6 @@ const GCM_TAG_LEN: usize = 16;
 
 /// Length in octets of an AES-CBC IV.
 const CBC_IV_LEN: usize = 16;
-
-/// A content encryption algorithm. CBC serves EnvelopedData (RFC 5652, section 6) and GCM serves
-/// AuthEnvelopedData (RFC 5083), with algorithm identifiers as defined by RFC 3565 and RFC 5084.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub enum ContentEncryptionAlgorithm {
-    /// AES-128 in CBC mode
-    Aes128Cbc,
-    /// AES-192 in CBC mode
-    Aes192Cbc,
-    /// AES-256 in CBC mode
-    Aes256Cbc,
-    /// AES-128 in GCM mode
-    Aes128Gcm,
-    /// AES-192 in GCM mode
-    Aes192Gcm,
-    /// AES-256 in GCM mode
-    Aes256Gcm,
-}
-
-impl ContentEncryptionAlgorithm {
-    /// The algorithm's object identifier.
-    pub fn oid(self) -> ObjectIdentifier {
-        match self {
-            ContentEncryptionAlgorithm::Aes128Cbc => rfc5911::ID_AES_128_CBC,
-            ContentEncryptionAlgorithm::Aes192Cbc => rfc5911::ID_AES_192_CBC,
-            ContentEncryptionAlgorithm::Aes256Cbc => rfc5911::ID_AES_256_CBC,
-            ContentEncryptionAlgorithm::Aes128Gcm => rfc5911::ID_AES_128_GCM,
-            ContentEncryptionAlgorithm::Aes192Gcm => rfc5911::ID_AES_192_GCM,
-            ContentEncryptionAlgorithm::Aes256Gcm => rfc5911::ID_AES_256_GCM,
-        }
-    }
-
-    /// The algorithm an object identifier identifies, if it is one of these.
-    pub fn from_oid(oid: ObjectIdentifier) -> Option<Self> {
-        [
-            ContentEncryptionAlgorithm::Aes128Cbc,
-            ContentEncryptionAlgorithm::Aes192Cbc,
-            ContentEncryptionAlgorithm::Aes256Cbc,
-            ContentEncryptionAlgorithm::Aes128Gcm,
-            ContentEncryptionAlgorithm::Aes192Gcm,
-            ContentEncryptionAlgorithm::Aes256Gcm,
-        ]
-        .into_iter()
-        .find(|a| a.oid() == oid)
-    }
-
-    /// Length in octets of the content-encryption key.
-    pub fn key_len(self) -> usize {
-        match self {
-            ContentEncryptionAlgorithm::Aes128Cbc | ContentEncryptionAlgorithm::Aes128Gcm => 16,
-            ContentEncryptionAlgorithm::Aes192Cbc | ContentEncryptionAlgorithm::Aes192Gcm => 24,
-            ContentEncryptionAlgorithm::Aes256Cbc | ContentEncryptionAlgorithm::Aes256Gcm => 32,
-        }
-    }
-
-    /// Whether the algorithm authenticates, i.e., is usable for AuthEnvelopedData.
-    pub fn is_authenticated(self) -> bool {
-        matches!(
-            self,
-            ContentEncryptionAlgorithm::Aes128Gcm
-                | ContentEncryptionAlgorithm::Aes192Gcm
-                | ContentEncryptionAlgorithm::Aes256Gcm
-        )
-    }
-}
 
 /// GCM parameters, from RFC 5084, section 3.2.
 ///
@@ -123,72 +61,6 @@ fn default_icv_len() -> u8 {
     12
 }
 
-/// The output of content encryption.
-pub struct EncryptedContent {
-    /// The ciphertext, without the authentication tag.
-    pub ciphertext: Vec<u8>,
-    /// The content-encryption key, for the recipients to wrap.
-    pub key: Zeroizing<Vec<u8>>,
-    /// The algorithm identifier, with the IV (CBC) or `GCMParameters` (GCM) as parameters.
-    pub algorithm: AlgorithmIdentifierOwned,
-    /// The authentication tag, present for an authenticated algorithm.
-    pub tag: Option<Vec<u8>>,
-}
-
-/// Content encryption performed by a cryptographic implementation, registered on a
-/// [`CmsEnvironment`] with [`CmsEnvironment::add_encrypt_content_callback`].
-///
-/// An implementation returns [`Error::Unrecognized`] for an algorithm it does not perform, so that
-/// the environment passes the request to the next one registered.
-///
-/// A blanket implementation covers every function with a matching signature, so a bare function
-/// (like [`encrypt_content_rust_crypto`]) can be registered directly. Implement the trait on a type
-/// when the implementation needs to hold state that a function pointer cannot, e.g. a handle to a
-/// hardware module.
-pub trait EncryptContent {
-    /// Generates a key for `alg`, and an IV or nonce, and encrypts `plaintext`. `aad` is the
-    /// additional authenticated data for an authenticated algorithm, and must be `None` otherwise.
-    fn encrypt_content(
-        &self,
-        env: &CmsEnvironment,
-        alg: ContentEncryptionAlgorithm,
-        plaintext: &[u8],
-        aad: Option<&[u8]>,
-    ) -> Result<EncryptedContent>;
-}
-
-impl<F> EncryptContent for F
-where
-    F: Fn(
-        &CmsEnvironment,
-        ContentEncryptionAlgorithm,
-        &[u8],
-        Option<&[u8]>,
-    ) -> Result<EncryptedContent>,
-{
-    fn encrypt_content(
-        &self,
-        env: &CmsEnvironment,
-        alg: ContentEncryptionAlgorithm,
-        plaintext: &[u8],
-        aad: Option<&[u8]>,
-    ) -> Result<EncryptedContent> {
-        self(env, alg, plaintext, aad)
-    }
-}
-
-impl<T: EncryptContent + ?Sized> EncryptContent for Arc<T> {
-    fn encrypt_content(
-        &self,
-        env: &CmsEnvironment,
-        alg: ContentEncryptionAlgorithm,
-        plaintext: &[u8],
-        aad: Option<&[u8]>,
-    ) -> Result<EncryptedContent> {
-        (**self).encrypt_content(env, alg, plaintext, aad)
-    }
-}
-
 /// Content encryption with RustCrypto's AES, CBC and GCM implementations, for every
 /// [`ContentEncryptionAlgorithm`]. Keys, IVs and nonces come from the operating system's random
 /// number generator.
@@ -197,7 +69,7 @@ pub fn encrypt_content_rust_crypto(
     alg: ContentEncryptionAlgorithm,
     plaintext: &[u8],
     aad: Option<&[u8]>,
-) -> Result<EncryptedContent> {
+) -> Result<ContentEncryptionOutput> {
     if aad.is_some() && !alg.is_authenticated() {
         return Err(Error::InvalidInput(String::from(
             "associated data given for an algorithm that does not authenticate",
@@ -231,7 +103,7 @@ fn cbc_encrypt<C>(
     alg: ContentEncryptionAlgorithm,
     key: Zeroizing<Vec<u8>>,
     plaintext: &[u8],
-) -> Result<EncryptedContent>
+) -> Result<ContentEncryptionOutput>
 where
     C: BlockCipherEncrypt,
     cbc::Encryptor<C>: KeyIvInit + BlockModeEncrypt,
@@ -240,7 +112,7 @@ where
     let encryptor = cbc::Encryptor::<C>::new_from_slices(&key, &iv)
         .map_err(|e| Error::Crypto(format!("{e}")))?;
     let ciphertext = encryptor.encrypt_padded_vec::<Pkcs7>(plaintext);
-    Ok(EncryptedContent {
+    Ok(ContentEncryptionOutput {
         ciphertext,
         key,
         algorithm: AlgorithmIdentifierOwned {
@@ -256,7 +128,7 @@ fn gcm_encrypt<C>(
     key: Zeroizing<Vec<u8>>,
     plaintext: &[u8],
     aad: &[u8],
-) -> Result<EncryptedContent>
+) -> Result<ContentEncryptionOutput>
 where
     AesGcm<C, U12>: KeyInit + AeadInOut,
 {
@@ -275,7 +147,7 @@ where
         nonce: OctetString::new(nonce.as_slice())?,
         icv_len: GCM_TAG_LEN as u8,
     };
-    Ok(EncryptedContent {
+    Ok(ContentEncryptionOutput {
         ciphertext,
         key,
         algorithm: AlgorithmIdentifierOwned {
@@ -284,4 +156,163 @@ where
         },
         tag: Some(tag.to_vec()),
     })
+}
+
+/// The mode-specific parameters of a content encryption algorithm identifier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ContentParameters {
+    /// AES-CBC: the 16-octet IV (RFC 3565).
+    Cbc {
+        /// The IV.
+        iv: Vec<u8>,
+    },
+    /// AES-GCM: the nonce from `GCMParameters` (RFC 5084), of whatever length the message gives.
+    Gcm {
+        /// The nonce.
+        nonce: Vec<u8>,
+    },
+}
+
+/// Checks and decodes the inputs to content decryption, for a [`DecryptContent`](crate::DecryptContent) implementation:
+/// the algorithm `alg` identifies, the key length it takes, associated data and a tag present
+/// exactly when it authenticates (the tag always then), and its parameters, with GCM's tag length
+/// the one `GCMParameters` gives.
+///
+/// An algorithm this crate does not know is [`Error::Unrecognized`]; a key of the wrong length is
+/// the [`Error::Crypto`] a failed decryption is, so that the two cannot be told apart; malformed
+/// inputs otherwise are [`Error::InvalidInput`].
+pub fn content_decryption_parameters(
+    alg: &AlgorithmIdentifierOwned,
+    key: &[u8],
+    aad: Option<&[u8]>,
+    tag: Option<&[u8]>,
+) -> Result<(ContentEncryptionAlgorithm, ContentParameters)> {
+    let content_alg = ContentEncryptionAlgorithm::from_oid(alg.oid).ok_or(Error::Unrecognized)?;
+    if content_alg.is_authenticated() != tag.is_some()
+        || (aad.is_some() && !content_alg.is_authenticated())
+    {
+        return Err(Error::InvalidInput(String::from(
+            "associated data or a tag that does not match the algorithm",
+        )));
+    }
+    if key.len() != content_alg.key_len() {
+        return Err(decryption_failed());
+    }
+    let params = alg
+        .parameters
+        .as_ref()
+        .ok_or_else(|| Error::InvalidInput(format!("{} without parameters", alg.oid)))?
+        .to_der()?;
+    let parameters = match tag {
+        None => {
+            let iv = OctetString::from_der(&params)?;
+            if iv.as_bytes().len() != CBC_IV_LEN {
+                return Err(Error::InvalidInput(format!(
+                    "CBC IV of {} octets",
+                    iv.as_bytes().len()
+                )));
+            }
+            ContentParameters::Cbc {
+                iv: iv.as_bytes().to_vec(),
+            }
+        }
+        Some(tag) => {
+            let params = GcmParameters::from_der(&params)?;
+            if usize::from(params.icv_len) != tag.len() {
+                return Err(Error::InvalidInput(format!(
+                    "a {}-octet tag where GCMParameters gives {}",
+                    tag.len(),
+                    params.icv_len
+                )));
+            }
+            ContentParameters::Gcm {
+                nonce: params.nonce.as_bytes().to_vec(),
+            }
+        }
+    };
+    Ok((content_alg, parameters))
+}
+
+/// Content decryption with RustCrypto's AES, CBC and GCM implementations, for every
+/// [`ContentEncryptionAlgorithm`], with GCM's 12-octet nonce and 16-octet tag; other nonce and tag
+/// lengths are declined. Every failure to decrypt, a wrong key, bad padding or a tag that does not
+/// verify, is the same [`Error::Crypto`].
+pub fn decrypt_content_rust_crypto(
+    _env: &CmsEnvironment,
+    alg: &AlgorithmIdentifierOwned,
+    key: &[u8],
+    ciphertext: &[u8],
+    aad: Option<&[u8]>,
+    tag: Option<&[u8]>,
+) -> Result<Zeroizing<Vec<u8>>> {
+    let (content_alg, parameters) = content_decryption_parameters(alg, key, aad, tag)?;
+    let aad = aad.unwrap_or_default();
+    match (content_alg, parameters, tag) {
+        (ContentEncryptionAlgorithm::Aes128Cbc, ContentParameters::Cbc { iv }, _) => {
+            cbc_decrypt::<Aes128>(key, &iv, ciphertext)
+        }
+        (ContentEncryptionAlgorithm::Aes192Cbc, ContentParameters::Cbc { iv }, _) => {
+            cbc_decrypt::<Aes192>(key, &iv, ciphertext)
+        }
+        (ContentEncryptionAlgorithm::Aes256Cbc, ContentParameters::Cbc { iv }, _) => {
+            cbc_decrypt::<Aes256>(key, &iv, ciphertext)
+        }
+        (ContentEncryptionAlgorithm::Aes128Gcm, ContentParameters::Gcm { nonce }, Some(tag)) => {
+            gcm_decrypt::<Aes128>(key, &nonce, ciphertext, aad, tag)
+        }
+        (ContentEncryptionAlgorithm::Aes192Gcm, ContentParameters::Gcm { nonce }, Some(tag)) => {
+            gcm_decrypt::<Aes192>(key, &nonce, ciphertext, aad, tag)
+        }
+        (ContentEncryptionAlgorithm::Aes256Gcm, ContentParameters::Gcm { nonce }, Some(tag)) => {
+            gcm_decrypt::<Aes256>(key, &nonce, ciphertext, aad, tag)
+        }
+        _ => Err(Error::Unrecognized),
+    }
+}
+
+fn decryption_failed() -> Error {
+    Error::Crypto(String::from("content decryption failed"))
+}
+
+fn cbc_decrypt<C>(key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>>
+where
+    C: BlockCipherDecrypt,
+    cbc::Decryptor<C>: KeyIvInit + BlockModeDecrypt,
+{
+    let decryptor =
+        cbc::Decryptor::<C>::new_from_slices(key, iv).map_err(|_| decryption_failed())?;
+    decryptor
+        .decrypt_padded_vec::<Pkcs7>(ciphertext)
+        .map(Zeroizing::new)
+        .map_err(|_| decryption_failed())
+}
+
+fn gcm_decrypt<C>(
+    key: &[u8],
+    nonce: &[u8],
+    ciphertext: &[u8],
+    aad: &[u8],
+    tag: &[u8],
+) -> Result<Zeroizing<Vec<u8>>>
+where
+    AesGcm<C, U12>: KeyInit + AeadInOut,
+{
+    // RustCrypto's AesGcm is instantiated for a 12-octet nonce and a 16-octet tag; other lengths
+    // are declined.
+    if nonce.len() != GCM_NONCE_LEN || tag.len() != GCM_TAG_LEN {
+        return Err(Error::Unrecognized);
+    }
+    let cipher = AesGcm::<C, U12>::new_from_slice(key).map_err(|_| decryption_failed())?;
+    let nonce = nonce.try_into().map_err(|_| decryption_failed())?;
+    let mut plaintext = Zeroizing::new(ciphertext.to_vec());
+    cipher
+        .decrypt_inout_detached(
+            &nonce,
+            aad,
+            InOutBuf::from(plaintext.as_mut_slice()),
+            tag.try_into().map_err(|_| decryption_failed())?,
+        )
+        .map_err(|_| decryption_failed())?;
+    Ok(plaintext)
 }
