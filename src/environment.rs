@@ -1,19 +1,27 @@
-//! [`CmsEnvironment`], the CMS counterpart of certval's `PkiEnvironment`.
+//! [`CmsEnvironment`]: the plug points through which every cryptographic operation of CMS
+//! processing goes, the CMS counterpart of certval's `PkiEnvironment`.
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-use spki::SubjectPublicKeyInfoOwned;
+use certval::PkiEnvironment;
+use cms::enveloped_data::RecipientIdentifier;
+use spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
+use zeroize::Zeroizing;
 
 use crate::algorithms::{
-    KdfAlgorithm, KeyAgreementAlgorithm, KeyTransportAlgorithm, KeyWrapAlgorithm,
+    ContentEncryptionAlgorithm, KdfAlgorithm, KeyAgreementAlgorithm, KeyTransportAlgorithm,
+    KeyWrapAlgorithm,
 };
-use crate::content::{
-    encrypt_content_rust_crypto, ContentEncryptionAlgorithm, EncryptContent, EncryptedContent,
+use crate::content::{decrypt_content_rust_crypto, encrypt_content_rust_crypto};
+
+use crate::environment_traits::{
+    ContentEncryptionOutput, DecryptContent, EncryptContent, EncryptKem, EncryptKeyAgreement,
+    EncryptKeyTransport, KemOutput, KeyAgreeOutput, RecipientCertificateSource,
+    RecipientCredentialSource, SharedRecipientCredential, SignerCertificateSource,
+    SigningCredentialSource,
 };
 use crate::error::{Error, Result};
-use crate::recipient::{
-    EncryptKem, EncryptKeyAgreement, EncryptKeyTransport, KemOutput, KeyAgreeOutput,
-};
+
 use crate::software::{
     encrypt_kem_rust_crypto, encrypt_key_agreement_rust_crypto, encrypt_key_transport_rust_crypto,
 };
@@ -33,22 +41,37 @@ fn first_answer<C: ?Sized, T>(
     Err(Error::Unrecognized)
 }
 
-/// The implementations CMS processing uses, each kind held in the order registered.
+/// The points at which CMS processing takes a pluggable implementation: content encryption and
+/// decryption, each kind of recipient key management, the sources of the private keys that decrypt
+/// and sign and of recipients' and signers' certificates, and the shared certval `PkiEnvironment`
+/// that hashes, verifies signatures and vets certificates.
 ///
-/// Like certval's `PkiEnvironment`, each kind of operation is offered to the registered
+/// As in certval's `PkiEnvironment`, each kind of operation is offered to its registered
 /// implementations in order, and the first that does not return [`Error::Unrecognized`] gives the
 /// result. A provider registered ahead of [`populate_software`](Self::populate_software) is
 /// consulted first, and software answers only what it declined. A caller who requires that every
 /// operation reach the provider registers no software.
 ///
-/// Certificate validation is not held here: an operation that validates a signer or recipient
-/// certificate takes a `PkiEnvironment` as well, so one can be shared across uses.
+/// A decryption finds the recipient's private key through the registered
+/// [`RecipientCredentialSource`]s, by recipient identifier, unless a credential is passed to it
+/// directly.
+///
+/// The environment may also hold a shared certval [`PkiEnvironment`], which vets recipients'
+/// certificates when an operation is given settings to vet them with; see
+/// [`vet_certificate`](Self::vet_certificate).
 #[derive(Default)]
 pub struct CmsEnvironment {
+    pub(crate) pki_environment: Option<Arc<PkiEnvironment>>,
     encrypt_content_callbacks: Vec<Box<dyn EncryptContent + Send + Sync>>,
+    decrypt_content_callbacks: Vec<Box<dyn DecryptContent + Send + Sync>>,
     encrypt_key_transport_callbacks: Vec<Box<dyn EncryptKeyTransport + Send + Sync>>,
     encrypt_key_agreement_callbacks: Vec<Box<dyn EncryptKeyAgreement + Send + Sync>>,
     encrypt_kem_callbacks: Vec<Box<dyn EncryptKem + Send + Sync>>,
+    recipient_credential_sources: Vec<Box<dyn RecipientCredentialSource + Send + Sync>>,
+    pub(crate) recipient_certificate_sources:
+        Vec<Box<dyn RecipientCertificateSource + Send + Sync>>,
+    pub(crate) signing_credential_sources: Vec<Box<dyn SigningCredentialSource + Send + Sync>>,
+    pub(crate) signer_certificate_sources: Vec<Box<dyn SignerCertificateSource + Send + Sync>>,
 }
 
 impl CmsEnvironment {
@@ -60,6 +83,7 @@ impl CmsEnvironment {
     /// Registers certval-cms's software implementations after anything already registered.
     pub fn populate_software(&mut self) {
         self.add_encrypt_content_callback(encrypt_content_rust_crypto);
+        self.add_decrypt_content_callback(decrypt_content_rust_crypto);
         self.add_encrypt_key_transport_callback(encrypt_key_transport_rust_crypto);
         self.add_encrypt_key_agreement_callback(encrypt_key_agreement_rust_crypto);
         self.add_encrypt_kem_callback(encrypt_kem_rust_crypto);
@@ -85,9 +109,37 @@ impl CmsEnvironment {
         alg: ContentEncryptionAlgorithm,
         plaintext: &[u8],
         aad: Option<&[u8]>,
-    ) -> Result<EncryptedContent> {
+    ) -> Result<ContentEncryptionOutput> {
         first_answer(&self.encrypt_content_callbacks, |c| {
             c.encrypt_content(self, alg, plaintext, aad)
+        })
+    }
+
+    /// Registers a content decryption implementation after those already registered.
+    pub fn add_decrypt_content_callback<C: DecryptContent + Send + Sync + 'static>(
+        &mut self,
+        c: C,
+    ) {
+        self.decrypt_content_callbacks.push(Box::new(c));
+    }
+
+    /// Removes every content decryption implementation.
+    pub fn clear_decrypt_content_callbacks(&mut self) {
+        self.decrypt_content_callbacks.clear();
+    }
+
+    /// Decrypts with the first registered implementation that does not decline. See
+    /// [`DecryptContent::decrypt_content`].
+    pub fn decrypt_content(
+        &self,
+        alg: &AlgorithmIdentifierOwned,
+        key: &[u8],
+        ciphertext: &[u8],
+        aad: Option<&[u8]>,
+        tag: Option<&[u8]>,
+    ) -> Result<Zeroizing<Vec<u8>>> {
+        first_answer(&self.decrypt_content_callbacks, |c| {
+            c.decrypt_content(self, alg, key, ciphertext, aad, tag)
         })
     }
 
@@ -168,5 +220,31 @@ impl CmsEnvironment {
         first_answer(&self.encrypt_kem_callbacks, |c| {
             c.encrypt_kem(self, kdf, wrap, spki, ukm, cek)
         })
+    }
+
+    /// Registers a source of recipient credentials after those already registered.
+    pub fn add_recipient_credential_source<S: RecipientCredentialSource + Send + Sync + 'static>(
+        &mut self,
+        source: S,
+    ) {
+        self.recipient_credential_sources.push(Box::new(source));
+    }
+
+    /// Removes every source of recipient credentials.
+    pub fn clear_recipient_credential_sources(&mut self) {
+        self.recipient_credential_sources.clear();
+    }
+
+    /// The credential the first registered source returns for `rid`, with that source's position.
+    pub fn find_recipient_credential(
+        &self,
+        rid: &RecipientIdentifier,
+    ) -> Result<Option<(SharedRecipientCredential, usize)>> {
+        for (index, source) in self.recipient_credential_sources.iter().enumerate() {
+            if let Some(credential) = source.find_recipient_credential(self, rid)? {
+                return Ok(Some((credential, index)));
+            }
+        }
+        Ok(None)
     }
 }

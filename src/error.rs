@@ -22,6 +22,15 @@ pub enum Error {
     Asn1(der::Error),
     /// A recipient builder failed.
     Builder(cms::builder::Error),
+    /// No recipient of a message is one an available credential decrypts for.
+    NoMatchingRecipient,
+    /// No credential is available for a signer, or no certificate for a SignerInfo's signer.
+    NoMatchingSigner,
+    /// Vetting was asked for, with settings, but the environment holds no `PkiEnvironment`.
+    NoPkiEnvironment,
+    /// certval reported a failure: no valid certification path, a key usage that does not permit
+    /// the use, or a signature that did not verify. The error says which.
+    Certval(certval::Error),
 }
 
 impl fmt::Display for Error {
@@ -32,6 +41,16 @@ impl fmt::Display for Error {
             Error::Crypto(e) => write!(f, "cryptographic operation failed: {e}"),
             Error::Asn1(e) => write!(f, "ASN.1 error: {e}"),
             Error::Builder(e) => write!(f, "recipient builder error: {e}"),
+            Error::NoMatchingSigner => {
+                f.write_str("no credential or certificate is available for a signer")
+            }
+            Error::NoPkiEnvironment => {
+                f.write_str("vetting was asked for, but no PkiEnvironment is set")
+            }
+            Error::Certval(e) => write!(f, "certval: {e}"),
+            Error::NoMatchingRecipient => {
+                f.write_str("no recipient of the message matches an available credential")
+            }
         }
     }
 }

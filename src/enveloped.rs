@@ -26,15 +26,16 @@ use der::{
 use rand_core::CryptoRng;
 use x509_cert::attr::Attributes as UnprotectedAttributes;
 
-use crate::content::{ContentEncryptionAlgorithm, EncryptedContent};
+use crate::algorithms::ContentEncryptionAlgorithm;
 use crate::environment::CmsEnvironment;
+use crate::environment_traits::ContentEncryptionOutput;
 use crate::error::{Error, Result};
 
 type Recipients<'c, R> = Vec<Box<dyn RecipientInfoBuilder<Rng = R> + 'c>>;
 
 fn build_recipients<R: CryptoRng + ?Sized>(
     recipients: &mut Recipients<'_, R>,
-    content: &EncryptedContent,
+    content: &ContentEncryptionOutput,
     rng: &mut R,
 ) -> Result<RecipientInfos> {
     if recipients.is_empty() {
@@ -102,7 +103,9 @@ impl<'c, R: CryptoRng + ?Sized> EnvelopedDataBuilder<'c, R> {
         self
     }
 
-    /// Adds a recipient.
+    /// Adds a recipient. Whether the recipient's certificate was vetted is the recipient's to say,
+    /// e.g. [`KeyTransRecipient::vetting`](crate::KeyTransRecipient::vetting), and is read before
+    /// adding it; the message built does not report it.
     pub fn add_recipient(
         &mut self,
         recipient: impl RecipientInfoBuilder<Rng = R> + 'c,
@@ -238,7 +241,9 @@ impl<'c, R: CryptoRng + ?Sized> AuthEnvelopedDataBuilder<'c, R> {
         self
     }
 
-    /// Adds a recipient.
+    /// Adds a recipient. Whether the recipient's certificate was vetted is the recipient's to say,
+    /// e.g. [`KeyTransRecipient::vetting`](crate::KeyTransRecipient::vetting), and is read before
+    /// adding it; the message built does not report it.
     pub fn add_recipient(
         &mut self,
         recipient: impl RecipientInfoBuilder<Rng = R> + 'c,
