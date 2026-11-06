@@ -102,24 +102,22 @@ pub use environment_traits::{
     EncryptKeyAgreement, EncryptKeyTransport, KemOutput, KeyAgreeOutput,
     RecipientCertificateSource, RecipientCredential, RecipientCredentialSource,
     SharedRecipientCredential, SharedSigningCredential, SignerCertificateSource, SigningCredential,
-    SigningCredentialLookup, SigningCredentialSource,
+    SigningCredentialLookup, SigningCredentialSource, SigningKey,
 };
 pub use error::{Error, Result};
-pub use ess::{EssCertIdV2, IssuerSerial, SigningCertificateV2};
 pub use recipient::{
-    ecc_cms_shared_info, kem_other_info, recipient_identifier, EccCmsSharedInfo, KemRecipient,
-    KeyAgreeRecipient, KeyTransRecipient,
+    ecc_cms_shared_info, kem_other_info, recipient_identifier, KemRecipient, KeyAgreeRecipient,
+    KeyTransRecipient,
 };
 pub use signed::{
     default_signature_algorithm, rsa_pss, signer_identifier, signer_matches, BuiltSignedData,
-    CertificatePublicKey, CredentialSignature, CredentialSigner, DigestAlgorithm,
-    IncludeCertificates, SignedDataBuilder, Signer, SignerCredential, SignerReport,
-    SingleSigningCredential,
+    CredentialSignature, CredentialSigner, DigestAlgorithm, IncludeCertificates, SignedDataBuilder,
+    Signer, SignerCredential, SignerPublicKey, SignerReport, SingleSigningCredential,
 };
 pub use software::{
     cek_from_ecdh_secret, cek_from_kem_secret, encrypt_kem_rust_crypto,
     encrypt_key_agreement_rust_crypto, encrypt_key_transport_rust_crypto, wrap_with_ecdh_secret,
-    SeedAndExpandedKey, SeedOrExpandedKey, SoftwareRecipientKey, SoftwareSigningKey,
+    SeedAndExpandedKey, SeedOrExpandedKey, SoftwareKey, SoftwareRecipientKey, SoftwareSigningKey,
 };
 pub use unwrap::{Layer, Unwrapped};
 pub use verify::{

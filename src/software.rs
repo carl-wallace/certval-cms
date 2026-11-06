@@ -45,7 +45,7 @@ use crate::algorithms::{
 
 use crate::environment::CmsEnvironment;
 use crate::environment_traits::{
-    KemOutput, KeyAgreeOutput, RecipientCredential, SigningCredential,
+    KemOutput, KeyAgreeOutput, RecipientCredential, SigningCredential, SigningKey,
 };
 use crate::error::{Error, Result};
 use crate::recipient::{ecc_cms_shared_info, kem_other_info};
@@ -390,7 +390,7 @@ macro_rules! ml_kem_key {
 }
 
 /// The private key a [`SoftwareRecipientKey`] holds.
-enum SoftwareKey {
+enum RecipientKeyMaterial {
     Rsa(RsaPrivateKey),
     P256(p256::SecretKey),
     P384(p384::SecretKey),
@@ -404,7 +404,7 @@ enum SoftwareKey {
 /// key transport, ECDH on P-256, P-384 or P-521, or ML-KEM-512, -768 or -1024.
 pub struct SoftwareRecipientKey {
     certificate: Certificate,
-    key: SoftwareKey,
+    key: RecipientKeyMaterial,
 }
 
 impl SoftwareRecipientKey {
@@ -414,28 +414,30 @@ impl SoftwareRecipientKey {
     pub fn from_pkcs8_der(certificate: Certificate, der: &[u8]) -> Result<Self> {
         let info = PrivateKeyInfoRef::from_der(der)?;
         let key = match info.algorithm.oid {
-            RSA_ENCRYPTION => SoftwareKey::Rsa(RsaPrivateKey::from_pkcs8_der(der).map_err(crypto)?),
+            RSA_ENCRYPTION => {
+                RecipientKeyMaterial::Rsa(RsaPrivateKey::from_pkcs8_der(der).map_err(crypto)?)
+            }
             ID_EC_PUBLIC_KEY => match info.algorithm.parameters_oid().map_err(crypto)? {
-                SECP_256_R_1 => {
-                    SoftwareKey::P256(p256::SecretKey::from_pkcs8_der(der).map_err(crypto)?)
-                }
-                SECP_384_R_1 => {
-                    SoftwareKey::P384(p384::SecretKey::from_pkcs8_der(der).map_err(crypto)?)
-                }
-                SECP_521_R_1 => {
-                    SoftwareKey::P521(p521::SecretKey::from_pkcs8_der(der).map_err(crypto)?)
-                }
+                SECP_256_R_1 => RecipientKeyMaterial::P256(
+                    p256::SecretKey::from_pkcs8_der(der).map_err(crypto)?,
+                ),
+                SECP_384_R_1 => RecipientKeyMaterial::P384(
+                    p384::SecretKey::from_pkcs8_der(der).map_err(crypto)?,
+                ),
+                SECP_521_R_1 => RecipientKeyMaterial::P521(
+                    p521::SecretKey::from_pkcs8_der(der).map_err(crypto)?,
+                ),
                 _ => return Err(Error::Unrecognized),
             },
-            ID_ALG_ML_KEM_512 => SoftwareKey::MlKem512(Box::new(ml_kem_key!(
+            ID_ALG_ML_KEM_512 => RecipientKeyMaterial::MlKem512(Box::new(ml_kem_key!(
                 ml_kem::DecapsulationKey512,
                 info.private_key.as_bytes()
             ))),
-            ID_ALG_ML_KEM_768 => SoftwareKey::MlKem768(Box::new(ml_kem_key!(
+            ID_ALG_ML_KEM_768 => RecipientKeyMaterial::MlKem768(Box::new(ml_kem_key!(
                 ml_kem::DecapsulationKey768,
                 info.private_key.as_bytes()
             ))),
-            ID_ALG_ML_KEM_1024 => SoftwareKey::MlKem1024(Box::new(ml_kem_key!(
+            ID_ALG_ML_KEM_1024 => RecipientKeyMaterial::MlKem1024(Box::new(ml_kem_key!(
                 ml_kem::DecapsulationKey1024,
                 info.private_key.as_bytes()
             ))),
@@ -458,13 +460,13 @@ impl SoftwareRecipientKey {
     /// The public half of the key, encoded as the certificate's would be.
     fn public_key(&self) -> Result<SubjectPublicKeyInfoOwned> {
         let der = match &self.key {
-            SoftwareKey::Rsa(k) => k.to_public_key().to_public_key_der(),
-            SoftwareKey::P256(k) => k.public_key().to_public_key_der(),
-            SoftwareKey::P384(k) => k.public_key().to_public_key_der(),
-            SoftwareKey::P521(k) => k.public_key().to_public_key_der(),
-            SoftwareKey::MlKem512(k) => k.encapsulation_key().to_public_key_der(),
-            SoftwareKey::MlKem768(k) => k.encapsulation_key().to_public_key_der(),
-            SoftwareKey::MlKem1024(k) => k.encapsulation_key().to_public_key_der(),
+            RecipientKeyMaterial::Rsa(k) => k.to_public_key().to_public_key_der(),
+            RecipientKeyMaterial::P256(k) => k.public_key().to_public_key_der(),
+            RecipientKeyMaterial::P384(k) => k.public_key().to_public_key_der(),
+            RecipientKeyMaterial::P521(k) => k.public_key().to_public_key_der(),
+            RecipientKeyMaterial::MlKem512(k) => k.encapsulation_key().to_public_key_der(),
+            RecipientKeyMaterial::MlKem768(k) => k.encapsulation_key().to_public_key_der(),
+            RecipientKeyMaterial::MlKem1024(k) => k.encapsulation_key().to_public_key_der(),
         }
         .map_err(crypto)?;
         Ok(SubjectPublicKeyInfoOwned::from_der(der.as_bytes())?)
@@ -498,7 +500,7 @@ impl RecipientCredential for SoftwareRecipientKey {
         alg: KeyTransportAlgorithm,
         encrypted_key: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
-        let SoftwareKey::Rsa(key) = &self.key else {
+        let RecipientKeyMaterial::Rsa(key) = &self.key else {
             return Err(Error::Unrecognized);
         };
         match alg {
@@ -530,9 +532,9 @@ impl RecipientCredential for SoftwareRecipientKey {
         encrypted_key: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
         let z = match &self.key {
-            SoftwareKey::P256(k) => ecdh_secret(k, originator)?,
-            SoftwareKey::P384(k) => ecdh_secret(k, originator)?,
-            SoftwareKey::P521(k) => ecdh_secret(k, originator)?,
+            RecipientKeyMaterial::P256(k) => ecdh_secret(k, originator)?,
+            RecipientKeyMaterial::P384(k) => ecdh_secret(k, originator)?,
+            RecipientKeyMaterial::P521(k) => ecdh_secret(k, originator)?,
             _ => return Err(Error::Unrecognized),
         };
         cek_from_ecdh_secret(alg, wrap, &z, ukm, encrypted_key)
@@ -548,13 +550,13 @@ impl RecipientCredential for SoftwareRecipientKey {
         encrypted_key: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
         let ss: Zeroizing<Vec<u8>> = match &self.key {
-            SoftwareKey::MlKem512(k) => {
+            RecipientKeyMaterial::MlKem512(k) => {
                 Zeroizing::new(k.decapsulate_slice(kem_ct).map_err(crypto)?.to_vec())
             }
-            SoftwareKey::MlKem768(k) => {
+            RecipientKeyMaterial::MlKem768(k) => {
                 Zeroizing::new(k.decapsulate_slice(kem_ct).map_err(crypto)?.to_vec())
             }
-            SoftwareKey::MlKem1024(k) => {
+            RecipientKeyMaterial::MlKem1024(k) => {
                 Zeroizing::new(k.decapsulate_slice(kem_ct).map_err(crypto)?.to_vec())
             }
             _ => return Err(Error::Unrecognized),
@@ -563,8 +565,8 @@ impl RecipientCredential for SoftwareRecipientKey {
     }
 }
 
-/// The private key a [`SoftwareSigningKey`] holds.
-enum SigningKey {
+/// The private key a [`SoftwareKey`] holds.
+enum SigningKeyMaterial {
     Rsa(RsaPrivateKey),
     P256(p256::ecdsa::SigningKey),
     P384(p384::ecdsa::SigningKey),
@@ -644,86 +646,6 @@ fn ml_dsa_sign<P: ml_dsa::MlDsaParams>(
     Ok(signature.encode().to_vec())
 }
 
-/// A [`SigningCredential`] holding a private key in memory and signing with RustCrypto: RSA with
-/// PKCS #1 v1.5 or RSASSA-PSS, or ECDSA on P-256, P-384 or P-521, each with SHA-256, -384 or -512.
-pub struct SoftwareSigningKey {
-    certificate: Certificate,
-    key: SigningKey,
-}
-
-impl SoftwareSigningKey {
-    /// A credential for the PKCS #8 (RFC 5958) private key `der`, identified by `certificate`. The
-    /// key must be the private half of the certificate's public key.
-    pub fn from_pkcs8_der(certificate: Certificate, der: &[u8]) -> Result<Self> {
-        let info = PrivateKeyInfoRef::from_der(der)?;
-        let key = match info.algorithm.oid {
-            RSA_ENCRYPTION => SigningKey::Rsa(RsaPrivateKey::from_pkcs8_der(der).map_err(crypto)?),
-            ID_EC_PUBLIC_KEY => match info.algorithm.parameters_oid().map_err(crypto)? {
-                SECP_256_R_1 => {
-                    SigningKey::P256(p256::SecretKey::from_pkcs8_der(der).map_err(crypto)?.into())
-                }
-                SECP_384_R_1 => {
-                    SigningKey::P384(p384::SecretKey::from_pkcs8_der(der).map_err(crypto)?.into())
-                }
-                SECP_521_R_1 => SigningKey::P521(
-                    p521::ecdsa::SigningKey::from_bytes(
-                        &p521::SecretKey::from_pkcs8_der(der)
-                            .map_err(crypto)?
-                            .to_bytes(),
-                    )
-                    .map_err(crypto)?,
-                ),
-                _ => return Err(Error::Unrecognized),
-            },
-            #[cfg(feature = "pqc")]
-            ID_ML_DSA_44 => SigningKey::MlDsa44(Box::new(ml_dsa_key!(
-                ml_dsa::MlDsa44,
-                info.private_key.as_bytes()
-            ))),
-            #[cfg(feature = "pqc")]
-            ID_ML_DSA_65 => SigningKey::MlDsa65(Box::new(ml_dsa_key!(
-                ml_dsa::MlDsa65,
-                info.private_key.as_bytes()
-            ))),
-            #[cfg(feature = "pqc")]
-            ID_ML_DSA_87 => SigningKey::MlDsa87(Box::new(ml_dsa_key!(
-                ml_dsa::MlDsa87,
-                info.private_key.as_bytes()
-            ))),
-            _ => return Err(Error::Unrecognized),
-        };
-        let from_der = |der: spki::Result<spki::Document>| -> Result<SubjectPublicKeyInfoOwned> {
-            Ok(SubjectPublicKeyInfoOwned::from_der(
-                der.map_err(crypto)?.as_bytes(),
-            )?)
-        };
-        let public = match &key {
-            SigningKey::Rsa(k) => from_der(k.to_public_key().to_public_key_der())?,
-            SigningKey::P256(k) => {
-                from_der(p256::PublicKey::from(k.verifying_key()).to_public_key_der())?
-            }
-            SigningKey::P384(k) => {
-                from_der(p384::PublicKey::from(k.verifying_key()).to_public_key_der())?
-            }
-            SigningKey::P521(k) => {
-                from_der(p521::PublicKey::from(k.verifying_key()).to_public_key_der())?
-            }
-            #[cfg(feature = "pqc")]
-            SigningKey::MlDsa44(k) => ml_dsa_public_key(ID_ML_DSA_44, k)?,
-            #[cfg(feature = "pqc")]
-            SigningKey::MlDsa65(k) => ml_dsa_public_key(ID_ML_DSA_65, k)?,
-            #[cfg(feature = "pqc")]
-            SigningKey::MlDsa87(k) => ml_dsa_public_key(ID_ML_DSA_87, k)?,
-        };
-        if public != *certificate.tbs_certificate().subject_public_key_info() {
-            return Err(Error::InvalidInput(String::from(
-                "the private key is not the certificate's",
-            )));
-        }
-        Ok(Self { certificate, key })
-    }
-}
-
 /// Signs the digest of `message` with an ECDSA key on `$curve`, as a DER-encoded signature. The
 /// signature algorithm's object identifier names the digest.
 macro_rules! ecdsa_sign {
@@ -738,6 +660,148 @@ macro_rules! ecdsa_sign {
         let signature: $curve::ecdsa::Signature = $key.sign_prehash(&prehash).map_err(crypto)?;
         Ok(signature.to_der().as_bytes().to_vec())
     }};
+}
+
+/// A [`SigningKey`] holding a private key in memory, with no certificate, and signing with
+/// RustCrypto as [`SoftwareSigningKey`] does: e.g. a key signing its own certificate request or a
+/// root's self-signed certificate.
+///
+/// It holds private key material, so it implements neither `Debug` nor `Clone`.
+pub struct SoftwareKey {
+    public_key: SubjectPublicKeyInfoOwned,
+    key: SigningKeyMaterial,
+}
+
+impl SoftwareKey {
+    /// A key for the PKCS #8 (RFC 5958) private key `der`: RSA, EC on P-256, P-384 or P-521, or
+    /// with `pqc`, ML-DSA in any of RFC 9881's three forms.
+    pub fn from_pkcs8_der(der: &[u8]) -> Result<Self> {
+        let info = PrivateKeyInfoRef::from_der(der)?;
+        let key = match info.algorithm.oid {
+            RSA_ENCRYPTION => {
+                SigningKeyMaterial::Rsa(RsaPrivateKey::from_pkcs8_der(der).map_err(crypto)?)
+            }
+            ID_EC_PUBLIC_KEY => match info.algorithm.parameters_oid().map_err(crypto)? {
+                SECP_256_R_1 => SigningKeyMaterial::P256(
+                    p256::SecretKey::from_pkcs8_der(der).map_err(crypto)?.into(),
+                ),
+                SECP_384_R_1 => SigningKeyMaterial::P384(
+                    p384::SecretKey::from_pkcs8_der(der).map_err(crypto)?.into(),
+                ),
+                SECP_521_R_1 => SigningKeyMaterial::P521(
+                    p521::ecdsa::SigningKey::from_bytes(
+                        &p521::SecretKey::from_pkcs8_der(der)
+                            .map_err(crypto)?
+                            .to_bytes(),
+                    )
+                    .map_err(crypto)?,
+                ),
+                _ => return Err(Error::Unrecognized),
+            },
+            #[cfg(feature = "pqc")]
+            ID_ML_DSA_44 => SigningKeyMaterial::MlDsa44(Box::new(ml_dsa_key!(
+                ml_dsa::MlDsa44,
+                info.private_key.as_bytes()
+            ))),
+            #[cfg(feature = "pqc")]
+            ID_ML_DSA_65 => SigningKeyMaterial::MlDsa65(Box::new(ml_dsa_key!(
+                ml_dsa::MlDsa65,
+                info.private_key.as_bytes()
+            ))),
+            #[cfg(feature = "pqc")]
+            ID_ML_DSA_87 => SigningKeyMaterial::MlDsa87(Box::new(ml_dsa_key!(
+                ml_dsa::MlDsa87,
+                info.private_key.as_bytes()
+            ))),
+            _ => return Err(Error::Unrecognized),
+        };
+        let from_der = |der: spki::Result<spki::Document>| -> Result<SubjectPublicKeyInfoOwned> {
+            Ok(SubjectPublicKeyInfoOwned::from_der(
+                der.map_err(crypto)?.as_bytes(),
+            )?)
+        };
+        let public = match &key {
+            SigningKeyMaterial::Rsa(k) => from_der(k.to_public_key().to_public_key_der())?,
+            SigningKeyMaterial::P256(k) => {
+                from_der(p256::PublicKey::from(k.verifying_key()).to_public_key_der())?
+            }
+            SigningKeyMaterial::P384(k) => {
+                from_der(p384::PublicKey::from(k.verifying_key()).to_public_key_der())?
+            }
+            SigningKeyMaterial::P521(k) => {
+                from_der(p521::PublicKey::from(k.verifying_key()).to_public_key_der())?
+            }
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::MlDsa44(k) => ml_dsa_public_key(ID_ML_DSA_44, k)?,
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::MlDsa65(k) => ml_dsa_public_key(ID_ML_DSA_65, k)?,
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::MlDsa87(k) => ml_dsa_public_key(ID_ML_DSA_87, k)?,
+        };
+        Ok(Self {
+            public_key: public,
+            key,
+        })
+    }
+
+    /// Signs `message` with `alg`, if `alg` is one the key signs with.
+    fn sign(&self, alg: &AlgorithmIdentifierOwned, message: &[u8]) -> Result<Vec<u8>> {
+        match &self.key {
+            SigningKeyMaterial::Rsa(key) => {
+                if alg.oid == ID_RSASSA_PSS {
+                    rsa_pss_sign(key, alg, message)
+                } else {
+                    rsa_pkcs1v15_sign(key, alg, message)
+                }
+            }
+            SigningKeyMaterial::P256(key) => ecdsa_sign!(p256, key, alg.oid, message),
+            SigningKeyMaterial::P384(key) => ecdsa_sign!(p384, key, alg.oid, message),
+            SigningKeyMaterial::P521(key) => ecdsa_sign!(p521, key, alg.oid, message),
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::MlDsa44(key) => ml_dsa_sign(key, ID_ML_DSA_44, alg, message),
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::MlDsa65(key) => ml_dsa_sign(key, ID_ML_DSA_65, alg, message),
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::MlDsa87(key) => ml_dsa_sign(key, ID_ML_DSA_87, alg, message),
+        }
+    }
+}
+
+impl SigningKey for SoftwareKey {
+    fn public_key(&self) -> &SubjectPublicKeyInfoOwned {
+        &self.public_key
+    }
+
+    fn sign_message(
+        &self,
+        _env: &CmsEnvironment,
+        alg: &AlgorithmIdentifierOwned,
+        message: &[u8],
+    ) -> Result<Vec<u8>> {
+        self.sign(alg, message)
+    }
+}
+
+/// A [`SigningCredential`] holding a private key in memory and signing with RustCrypto: RSA with
+/// PKCS #1 v1.5 or RSASSA-PSS, or ECDSA on P-256, P-384 or P-521, each with SHA-256, -384 or -512,
+/// and with `pqc`, ML-DSA. A [`SoftwareKey`] with its certificate.
+pub struct SoftwareSigningKey {
+    certificate: Certificate,
+    key: SoftwareKey,
+}
+
+impl SoftwareSigningKey {
+    /// A credential for the PKCS #8 (RFC 5958) private key `der`, identified by `certificate`. The
+    /// key must be the private half of the certificate's public key.
+    pub fn from_pkcs8_der(certificate: Certificate, der: &[u8]) -> Result<Self> {
+        let key = SoftwareKey::from_pkcs8_der(der)?;
+        if key.public_key != *certificate.tbs_certificate().subject_public_key_info() {
+            return Err(Error::InvalidInput(String::from(
+                "the private key is not the certificate's",
+            )));
+        }
+        Ok(Self { certificate, key })
+    }
 }
 
 /// Signs `message` with RSASSA-PSS as this crate produces it: MGF1 with the same hash, and a salt
@@ -808,23 +872,6 @@ impl SigningCredential for SoftwareSigningKey {
         alg: &AlgorithmIdentifierOwned,
         message: &[u8],
     ) -> Result<Vec<u8>> {
-        match &self.key {
-            SigningKey::Rsa(key) => {
-                if alg.oid == ID_RSASSA_PSS {
-                    rsa_pss_sign(key, alg, message)
-                } else {
-                    rsa_pkcs1v15_sign(key, alg, message)
-                }
-            }
-            SigningKey::P256(key) => ecdsa_sign!(p256, key, alg.oid, message),
-            SigningKey::P384(key) => ecdsa_sign!(p384, key, alg.oid, message),
-            SigningKey::P521(key) => ecdsa_sign!(p521, key, alg.oid, message),
-            #[cfg(feature = "pqc")]
-            SigningKey::MlDsa44(key) => ml_dsa_sign(key, ID_ML_DSA_44, alg, message),
-            #[cfg(feature = "pqc")]
-            SigningKey::MlDsa65(key) => ml_dsa_sign(key, ID_ML_DSA_65, alg, message),
-            #[cfg(feature = "pqc")]
-            SigningKey::MlDsa87(key) => ml_dsa_sign(key, ID_ML_DSA_87, alg, message),
-        }
+        self.key.sign(alg, message)
     }
 }
