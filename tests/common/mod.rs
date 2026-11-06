@@ -102,7 +102,7 @@ pub fn email_address(email: &str) -> Extension {
     )
 }
 
-fn ca_extensions() -> Vec<Extension> {
+pub fn ca_extensions() -> Vec<Extension> {
     vec![
         extension(
             ID_CE_BASIC_CONSTRAINTS,
@@ -205,6 +205,38 @@ fn issue(
     )
     .unwrap()
     .build::<_, p256::ecdsa::DerSignature>(key)
+    .unwrap()
+}
+
+/// A certificate for `spki_der` named `subject`, issued under `issuer` by any signer the builder
+/// takes, with the given extensions and a subject key identifier.
+pub fn issue_by<S, Sig>(
+    signer: &S,
+    issuer: &Name,
+    subject: &str,
+    spki_der: &[u8],
+    serial: u8,
+    extensions: Vec<Extension>,
+) -> Certificate
+where
+    S: signature::Signer<Sig> + signature::Keypair + spki::DynSignatureAlgorithmIdentifier,
+    S::VerifyingKey: spki::EncodePublicKey,
+    Sig: spki::SignatureBitStringEncoding,
+{
+    let profile = Profile {
+        issuer: issuer.clone(),
+        subject: Name::from_str(subject).unwrap(),
+        extensions,
+        skid: true,
+    };
+    CertificateBuilder::new(
+        profile,
+        SerialNumber::new(&[serial]).unwrap(),
+        day(),
+        SubjectPublicKeyInfoOwned::from_der(spki_der).unwrap(),
+    )
+    .unwrap()
+    .build::<_, Sig>(signer)
     .unwrap()
 }
 

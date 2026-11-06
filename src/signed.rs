@@ -32,11 +32,14 @@ use const_oid::{
 };
 use core::marker::PhantomData;
 use der::{
-    asn1::{Any, OctetString, SetOfVec},
+    asn1::{Any, BitString, OctetString, SetOfVec},
     Decode, Encode, Tag,
 };
 use log::debug;
-use spki::{AlgorithmIdentifierOwned, DynSignatureAlgorithmIdentifier, SignatureBitStringEncoding};
+use spki::{
+    AlgorithmIdentifierOwned, DynSignatureAlgorithmIdentifier, EncodePublicKey,
+    SignatureBitStringEncoding, SubjectPublicKeyInfoOwned,
+};
 use x509_cert::{attr::Attribute, name::Name, time::Time, Certificate};
 
 use crate::credential::CredentialOrigin;
@@ -193,6 +196,129 @@ where
             .try_sign(message)
             .map_err(|e| Error::Crypto(format!("{e}")))?;
         Ok(signature.to_bitstring()?.raw_bytes().to_vec())
+    }
+}
+
+/// A [`signature::Signer`] over a [`SigningCredential`], for the builders that take one, such as
+/// x509-cert's certificate, request and CRL builders and x509-ocsp's request and response builders,
+/// so that a credential any provider holds can sign certificates, CRLs and OCSP responses.
+///
+/// The credential signs with one signature algorithm, which the signer reports, and its
+/// certificate's public key is the signer's verifying key, so an issuer's authority key identifier
+/// can be computed from it. A credential that signs only digests is given the digest, computed by
+/// the environment's `PkiEnvironment`, as SignedData signing does.
+pub struct CredentialSigner<'a> {
+    env: &'a CmsEnvironment,
+    credential: &'a dyn SigningCredential,
+    signature_algorithm: AlgorithmIdentifierOwned,
+    digest: DigestAlgorithm,
+}
+
+impl<'a> CredentialSigner<'a> {
+    /// A signer for `credential` with `digest` and the signature algorithm the credential prefers,
+    /// or else the one [`default_signature_algorithm`] chooses for its key.
+    pub fn new(
+        env: &'a CmsEnvironment,
+        credential: &'a dyn SigningCredential,
+        digest: DigestAlgorithm,
+    ) -> Result<Self> {
+        let signature_algorithm = match credential.preferred_signature_algorithm(digest) {
+            Some(alg) => alg,
+            None => default_signature_algorithm(credential.certificate(), digest)?,
+        };
+        Ok(Self::with_algorithm(
+            env,
+            credential,
+            digest,
+            signature_algorithm,
+        ))
+    }
+
+    /// A signer for `credential` with `signature_algorithm`, e.g. RSASSA-PSS from [`rsa_pss`].
+    /// `digest` is the digest a credential that signs only digests is given, and must be the one
+    /// `signature_algorithm` uses.
+    pub fn with_algorithm(
+        env: &'a CmsEnvironment,
+        credential: &'a dyn SigningCredential,
+        digest: DigestAlgorithm,
+        signature_algorithm: AlgorithmIdentifierOwned,
+    ) -> Self {
+        Self {
+            env,
+            credential,
+            signature_algorithm,
+            digest,
+        }
+    }
+
+    fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
+        let alg = &self.signature_algorithm;
+        match self.credential.sign_message(self.env, alg, message) {
+            Err(Error::Unrecognized) => {
+                let pe = self.env.pki_environment().ok_or(Error::NoPkiEnvironment)?;
+                let digest = pe.calculate_hash(pe, &self.digest.algorithm_identifier(), message)?;
+                self.credential.sign_digest(self.env, alg, &digest)
+            }
+            result => result,
+        }
+    }
+}
+
+/// A signature a [`CredentialSigner`] made, as the signature value's octets.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialSignature(Vec<u8>);
+
+impl CredentialSignature {
+    /// The signature value's octets.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl SignatureBitStringEncoding for CredentialSignature {
+    fn to_bitstring(&self) -> der::Result<BitString> {
+        BitString::from_bytes(&self.0)
+    }
+}
+
+impl signature::Signer<CredentialSignature> for CredentialSigner<'_> {
+    fn try_sign(
+        &self,
+        message: &[u8],
+    ) -> core::result::Result<CredentialSignature, signature::Error> {
+        self.sign(message)
+            .map(CredentialSignature)
+            .map_err(signature::Error::from_source)
+    }
+}
+
+impl DynSignatureAlgorithmIdentifier for CredentialSigner<'_> {
+    fn signature_algorithm_identifier(&self) -> spki::Result<AlgorithmIdentifierOwned> {
+        Ok(self.signature_algorithm.clone())
+    }
+}
+
+impl signature::Keypair for CredentialSigner<'_> {
+    type VerifyingKey = CertificatePublicKey;
+
+    fn verifying_key(&self) -> CertificatePublicKey {
+        CertificatePublicKey(
+            self.credential
+                .certificate()
+                .tbs_certificate()
+                .subject_public_key_info()
+                .clone(),
+        )
+    }
+}
+
+/// The public key of a [`CredentialSigner`]'s certificate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CertificatePublicKey(pub SubjectPublicKeyInfoOwned);
+
+impl EncodePublicKey for CertificatePublicKey {
+    fn to_public_key_der(&self) -> spki::Result<der::Document> {
+        Ok(der::Document::encode_msg(&self.0)?)
     }
 }
 
