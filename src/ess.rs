@@ -20,7 +20,7 @@ use x509_cert::{
 ///   serialNumber CertificateSerialNumber }
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct IssuerSerial {
+pub(crate) struct IssuerSerial {
     /// The issuer's names.
     pub issuer: Vec<GeneralName>,
     /// The certificate's serial number.
@@ -58,7 +58,7 @@ impl IssuerSerial {
 /// The default hash algorithm is absent from the encoding (DER, X.690 section 11.5), so an absent
 /// `hash_algorithm` is SHA-256; see [`hash_algorithm`](Self::hash_algorithm).
 #[derive(Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct EssCertIdV2 {
+pub(crate) struct EssCertIdV2 {
     /// The algorithm `cert_hash` was computed with; absent for SHA-256.
     #[asn1(optional = "true")]
     pub hash_algorithm: Option<AlgorithmIdentifierOwned>,
@@ -90,7 +90,7 @@ impl EssCertIdV2 {
 /// The policies, which constrain the certificate's use, are decoded but not applied when a
 /// SignedData is verified; applying them is the caller's.
 #[derive(Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct SigningCertificateV2 {
+pub(crate) struct SigningCertificateV2 {
     /// The signer's certificate first, then any others relevant to the signature.
     pub certs: Vec<EssCertIdV2>,
     /// The policies under which the signer's certificate is to be used.

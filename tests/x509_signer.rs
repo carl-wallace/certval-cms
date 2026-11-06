@@ -1,11 +1,13 @@
 //! `CredentialSigner`: a CA's key, held as a `SigningCredential`, signs a certificate and a CRL
 //! through x509-cert's builders, and each signature verifies with the CA certificate's key. ECDSA on
-//! P-256, and with `pqc`, ML-DSA-65.
+//! P-256, and with `pqc`, ML-DSA-65. A key with no certificate, a `SoftwareKey`, signs its own
+//! self-signed root and its own certificate request.
 
 mod common;
 
 use certval_cms::{
-    CmsEnvironment, CredentialSignature, CredentialSigner, DigestAlgorithm, SoftwareSigningKey,
+    CmsEnvironment, CredentialSignature, CredentialSigner, DigestAlgorithm, SoftwareKey,
+    SoftwareSigningKey,
 };
 use common::{ca_extensions, environment, issue_by, key_usage, rng, Ca};
 use der::Encode;
@@ -147,4 +149,74 @@ fn ml_dsa_65_issues_a_certificate_and_a_crl() {
         key.to_pkcs8_der().unwrap().as_bytes(),
     );
     issues_and_revokes(&env, &ca, DigestAlgorithm::Sha512, "ML-DSA-65");
+}
+
+/// A key with no certificate signs its own self-signed root and its own certificate request, and
+/// each signature verifies with the key's public key.
+fn self_signs(env: &CmsEnvironment, pkcs8: &[u8], digest: DigestAlgorithm, name: &str) {
+    use std::str::FromStr;
+    use x509_cert::{name::Name, request::RequestBuilder};
+    let key = SoftwareKey::from_pkcs8_der(pkcs8).unwrap();
+    let signer = CredentialSigner::new(env, &key, digest).unwrap();
+    let spki = signer.verifying_key().to_public_key_der().unwrap();
+
+    let subject = Name::from_str("CN=self-signed by a SoftwareKey").unwrap();
+    let root = issue_by::<_, CredentialSignature>(
+        &signer,
+        &subject,
+        "CN=self-signed by a SoftwareKey",
+        spki.as_bytes(),
+        1,
+        ca_extensions(),
+    );
+    assert_signed_by(
+        env,
+        &root,
+        &root.tbs_certificate().to_der().unwrap(),
+        root.signature(),
+        root.signature_algorithm(),
+        &format!("{name}: self-signed root"),
+    );
+
+    let request = RequestBuilder::new(subject)
+        .unwrap()
+        .build::<_, CredentialSignature>(&signer)
+        .unwrap();
+    assert_eq!(
+        request.info.public_key.to_der().unwrap(),
+        spki.as_bytes(),
+        "{name}: the request carries the key's public key"
+    );
+    let pe = env.pki_environment().unwrap();
+    pe.verify_signature_message(
+        pe,
+        &request.info.to_der().unwrap(),
+        &request.signature,
+        &request.algorithm,
+        &request.info.public_key,
+    )
+    .unwrap_or_else(|e| panic!("{name}: certificate request: {e:?}"));
+}
+
+#[test]
+fn a_key_without_a_certificate_signs_its_root_and_its_request() {
+    let env = environment(&Ca::new("CN=test root"), &[]);
+    let key = p256::SecretKey::generate_from_rng(&mut rng());
+    self_signs(
+        &env,
+        key.to_pkcs8_der().unwrap().as_bytes(),
+        DigestAlgorithm::Sha256,
+        "P-256",
+    );
+    #[cfg(feature = "pqc")]
+    {
+        use ml_dsa::common::Generate as _;
+        let key = ml_dsa::SigningKey::<ml_dsa::MlDsa65>::generate_from_rng(&mut rng());
+        self_signs(
+            &env,
+            key.to_pkcs8_der().unwrap().as_bytes(),
+            DigestAlgorithm::Sha512,
+            "ML-DSA-65",
+        );
+    }
 }

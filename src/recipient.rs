@@ -48,7 +48,7 @@ use crate::vetting::{KeyUse, Vetting};
 ///   suppPubInfo [2] EXPLICIT OCTET STRING }
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq, Sequence)]
-pub struct EccCmsSharedInfo {
+pub(crate) struct EccCmsSharedInfo {
     /// The key wrap algorithm the derived key-encryption key is for.
     pub key_info: AlgorithmIdentifierOwned,
     /// The user keying material, when there is any.

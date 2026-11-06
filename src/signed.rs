@@ -46,6 +46,7 @@ use crate::credential::CredentialOrigin;
 use crate::environment::CmsEnvironment;
 use crate::environment_traits::{
     SharedSigningCredential, SigningCredential, SigningCredentialLookup, SigningCredentialSource,
+    SigningKey,
 };
 use crate::error::{Error, Result};
 use crate::ess::{EssCertIdV2, IssuerSerial, SigningCertificateV2};
@@ -101,11 +102,15 @@ pub fn default_signature_algorithm(
     cert: &Certificate,
     digest: DigestAlgorithm,
 ) -> Result<AlgorithmIdentifierOwned> {
-    let key_alg = cert
-        .tbs_certificate()
-        .subject_public_key_info()
-        .algorithm
-        .oid;
+    default_signature_algorithm_for_key(cert.tbs_certificate().subject_public_key_info(), digest)
+}
+
+/// [`default_signature_algorithm`] for the key `spki`, which no certificate need contain yet.
+pub(crate) fn default_signature_algorithm_for_key(
+    spki: &SubjectPublicKeyInfoOwned,
+    digest: DigestAlgorithm,
+) -> Result<AlgorithmIdentifierOwned> {
+    let key_alg = spki.algorithm.oid;
     let (oid, parameters) = match (key_alg, digest) {
         (RSA_ENCRYPTION, DigestAlgorithm::Sha256) => {
             (SHA_256_WITH_RSA_ENCRYPTION, Some(Any::null()))
@@ -199,53 +204,47 @@ where
     }
 }
 
-/// A [`signature::Signer`] over a [`SigningCredential`], for the builders that take one, such as
+/// A [`signature::Signer`] over a [`SigningKey`], for the builders that take one, such as
 /// x509-cert's certificate, request and CRL builders and x509-ocsp's request and response builders,
-/// so that a credential any provider holds can sign certificates, CRLs and OCSP responses.
+/// so that a key any provider holds can sign certificates, requests, CRLs and OCSP responses. Every
+/// [`SigningCredential`] is a [`SigningKey`], so a credential is taken as it is; a key with no
+/// certificate yet, e.g. a [`SoftwareKey`](crate::SoftwareKey), signs its own request or a
+/// self-signed certificate.
 ///
-/// The credential signs with one signature algorithm, which the signer reports, and its
-/// certificate's public key is the signer's verifying key, so an issuer's authority key identifier
-/// can be computed from it. A credential that signs only digests is given the digest, computed by
-/// the environment's `PkiEnvironment`, as SignedData signing does.
-pub struct CredentialSigner<'a> {
+/// The key signs with one signature algorithm, which the signer reports, and its public key is the
+/// signer's verifying key, so an issuer's authority key identifier, or a request's subject key, can
+/// be taken from it. A key that signs only digests is given the digest, computed by the
+/// environment's `PkiEnvironment`, as SignedData signing does.
+pub struct CredentialSigner<'a, K: SigningKey + ?Sized = dyn SigningCredential + 'a> {
     env: &'a CmsEnvironment,
-    credential: &'a dyn SigningCredential,
+    key: &'a K,
     signature_algorithm: AlgorithmIdentifierOwned,
     digest: DigestAlgorithm,
 }
 
-impl<'a> CredentialSigner<'a> {
-    /// A signer for `credential` with `digest` and the signature algorithm the credential prefers,
-    /// or else the one [`default_signature_algorithm`] chooses for its key.
-    pub fn new(
-        env: &'a CmsEnvironment,
-        credential: &'a dyn SigningCredential,
-        digest: DigestAlgorithm,
-    ) -> Result<Self> {
-        let signature_algorithm = match credential.preferred_signature_algorithm(digest) {
+impl<'a, K: SigningKey + ?Sized> CredentialSigner<'a, K> {
+    /// A signer for `key` with `digest` and the signature algorithm the key prefers, or else the
+    /// one [`default_signature_algorithm`] chooses for it.
+    pub fn new(env: &'a CmsEnvironment, key: &'a K, digest: DigestAlgorithm) -> Result<Self> {
+        let signature_algorithm = match key.preferred_signature_algorithm(digest) {
             Some(alg) => alg,
-            None => default_signature_algorithm(credential.certificate(), digest)?,
+            None => default_signature_algorithm_for_key(key.public_key(), digest)?,
         };
-        Ok(Self::with_algorithm(
-            env,
-            credential,
-            digest,
-            signature_algorithm,
-        ))
+        Ok(Self::with_algorithm(env, key, digest, signature_algorithm))
     }
 
-    /// A signer for `credential` with `signature_algorithm`, e.g. RSASSA-PSS from [`rsa_pss`].
-    /// `digest` is the digest a credential that signs only digests is given, and must be the one
+    /// A signer for `key` with `signature_algorithm`, e.g. RSASSA-PSS from [`rsa_pss`]. `digest`
+    /// is the digest a key that signs only digests is given, and must be the one
     /// `signature_algorithm` uses.
     pub fn with_algorithm(
         env: &'a CmsEnvironment,
-        credential: &'a dyn SigningCredential,
+        key: &'a K,
         digest: DigestAlgorithm,
         signature_algorithm: AlgorithmIdentifierOwned,
     ) -> Self {
         Self {
             env,
-            credential,
+            key,
             signature_algorithm,
             digest,
         }
@@ -253,11 +252,11 @@ impl<'a> CredentialSigner<'a> {
 
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
         let alg = &self.signature_algorithm;
-        match self.credential.sign_message(self.env, alg, message) {
+        match self.key.sign_message(self.env, alg, message) {
             Err(Error::Unrecognized) => {
                 let pe = self.env.pki_environment().ok_or(Error::NoPkiEnvironment)?;
                 let digest = pe.calculate_hash(pe, &self.digest.algorithm_identifier(), message)?;
-                self.credential.sign_digest(self.env, alg, &digest)
+                self.key.sign_digest(self.env, alg, &digest)
             }
             result => result,
         }
@@ -281,7 +280,7 @@ impl SignatureBitStringEncoding for CredentialSignature {
     }
 }
 
-impl signature::Signer<CredentialSignature> for CredentialSigner<'_> {
+impl<K: SigningKey + ?Sized> signature::Signer<CredentialSignature> for CredentialSigner<'_, K> {
     fn try_sign(
         &self,
         message: &[u8],
@@ -292,31 +291,25 @@ impl signature::Signer<CredentialSignature> for CredentialSigner<'_> {
     }
 }
 
-impl DynSignatureAlgorithmIdentifier for CredentialSigner<'_> {
+impl<K: SigningKey + ?Sized> DynSignatureAlgorithmIdentifier for CredentialSigner<'_, K> {
     fn signature_algorithm_identifier(&self) -> spki::Result<AlgorithmIdentifierOwned> {
         Ok(self.signature_algorithm.clone())
     }
 }
 
-impl signature::Keypair for CredentialSigner<'_> {
-    type VerifyingKey = CertificatePublicKey;
+impl<K: SigningKey + ?Sized> signature::Keypair for CredentialSigner<'_, K> {
+    type VerifyingKey = SignerPublicKey;
 
-    fn verifying_key(&self) -> CertificatePublicKey {
-        CertificatePublicKey(
-            self.credential
-                .certificate()
-                .tbs_certificate()
-                .subject_public_key_info()
-                .clone(),
-        )
+    fn verifying_key(&self) -> SignerPublicKey {
+        SignerPublicKey(self.key.public_key().clone())
     }
 }
 
-/// The public key of a [`CredentialSigner`]'s certificate.
+/// The public key of a [`CredentialSigner`]'s key.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CertificatePublicKey(pub SubjectPublicKeyInfoOwned);
+pub struct SignerPublicKey(pub SubjectPublicKeyInfoOwned);
 
-impl EncodePublicKey for CertificatePublicKey {
+impl EncodePublicKey for SignerPublicKey {
     fn to_public_key_der(&self) -> spki::Result<der::Document> {
         Ok(der::Document::encode_msg(&self.0)?)
     }

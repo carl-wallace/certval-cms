@@ -402,6 +402,78 @@ pub trait RecipientCredentialSource {
     ) -> Result<Option<SharedRecipientCredential>>;
 }
 
+// ---- Signing keys
+
+/// A private key that signs, known by its public key rather than a certificate: e.g. a key signing
+/// its own certificate request, or a root's key signing its self-signed certificate. Every
+/// [`SigningCredential`] is one, with its certificate's public key, by the implementation below, so
+/// [`CredentialSigner`](crate::CredentialSigner) takes either. Each signing method defaults to
+/// [`Error::Unrecognized`]; a key implements at least one.
+pub trait SigningKey {
+    /// The public key, as a certificate or certificate request carries it.
+    fn public_key(&self) -> &SubjectPublicKeyInfoOwned;
+
+    /// The signature algorithm the key signs with when the signer does not set one. `None`, the
+    /// default, leaves the choice to the key's algorithm.
+    fn preferred_signature_algorithm(
+        &self,
+        _digest: DigestAlgorithm,
+    ) -> Option<AlgorithmIdentifierOwned> {
+        None
+    }
+
+    /// Signs `message` with `alg`, returning the signature value.
+    fn sign_message(
+        &self,
+        _env: &CmsEnvironment,
+        _alg: &AlgorithmIdentifierOwned,
+        _message: &[u8],
+    ) -> Result<Vec<u8>> {
+        Err(Error::Unrecognized)
+    }
+
+    /// Signs `digest`, computed with the signer's digest algorithm, with `alg`, returning the
+    /// signature value.
+    fn sign_digest(
+        &self,
+        _env: &CmsEnvironment,
+        _alg: &AlgorithmIdentifierOwned,
+        _digest: &[u8],
+    ) -> Result<Vec<u8>> {
+        Err(Error::Unrecognized)
+    }
+}
+
+impl<T: SigningCredential + ?Sized> SigningKey for T {
+    fn public_key(&self) -> &SubjectPublicKeyInfoOwned {
+        self.certificate()
+            .tbs_certificate()
+            .subject_public_key_info()
+    }
+    fn preferred_signature_algorithm(
+        &self,
+        digest: DigestAlgorithm,
+    ) -> Option<AlgorithmIdentifierOwned> {
+        SigningCredential::preferred_signature_algorithm(self, digest)
+    }
+    fn sign_message(
+        &self,
+        env: &CmsEnvironment,
+        alg: &AlgorithmIdentifierOwned,
+        message: &[u8],
+    ) -> Result<Vec<u8>> {
+        SigningCredential::sign_message(self, env, alg, message)
+    }
+    fn sign_digest(
+        &self,
+        env: &CmsEnvironment,
+        alg: &AlgorithmIdentifierOwned,
+        digest: &[u8],
+    ) -> Result<Vec<u8>> {
+        SigningCredential::sign_digest(self, env, alg, digest)
+    }
+}
+
 // ---- Signing credentials
 
 /// A signer's private key, which signs either a message or a digest of it, whichever its key
