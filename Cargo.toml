@@ -58,7 +58,7 @@ sha1 = { version = "0.11.0", default-features = false, features = ["oid"] }
 sha2 = { version = "0.11.0", default-features = false, features = ["oid"] }
 ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc"], optional = true }
 # The Signer trait, for SignerCredential, which adapts any signer that knows its algorithm.
-signature = "3.0.0"
+signature = { version = "3.0.0", features = ["alloc"] }
 # Constant-time examination of PKCS #1 v1.5 padding after a raw RSA decryption.
 subtle = { version = "2.6.1", default-features = false }
 # The random number generator trait cms's recipient builders take.

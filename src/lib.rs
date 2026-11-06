@@ -112,8 +112,9 @@ pub use recipient::{
 };
 pub use signed::{
     default_signature_algorithm, rsa_pss, signer_identifier, signer_matches, BuiltSignedData,
-    DigestAlgorithm, IncludeCertificates, SignedDataBuilder, Signer, SignerCredential,
-    SignerReport, SingleSigningCredential,
+    CertificatePublicKey, CredentialSignature, CredentialSigner, DigestAlgorithm,
+    IncludeCertificates, SignedDataBuilder, Signer, SignerCredential, SignerReport,
+    SingleSigningCredential,
 };
 pub use software::{
     cek_from_ecdh_secret, cek_from_kem_secret, encrypt_kem_rust_crypto,

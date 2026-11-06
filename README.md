@@ -76,6 +76,9 @@ recipients, which implement `RecipientInfoBuilder` with their cryptography going
 environment. `cms`'s own recipient builders can still be added to a message, but they do their own
 cryptography and reach no plug point. Signing in `cms` is already pluggable through
 `signature::Signer`, and `SignerCredential` adapts any such signer to this crate's signing.
+`CredentialSigner` goes the other way: it presents a `SigningCredential` as a `signature::Signer`,
+with its certificate's public key as the verifying key, so that x509-cert's certificate and CRL
+builders and x509-ocsp's builders can sign with a key any provider holds.
 
 ## Enveloping
 
