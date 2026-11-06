@@ -27,7 +27,7 @@ pqc = ["dep:ml-dsa", "certval/pqc"]
 [dependencies]
 # Certificate vetting: path building, validation, and revocation checked against what the
 # PkiEnvironment holds. `revocation` adds that local check without std or networking.
-certval = { version = "0.2.0-rc.1", default-features = false, features = ["revocation"] }
+certval = { version = "0.2.0-rc.2", default-features = false, features = ["revocation"] }
 
 # The ASN.1 types, and the RecipientInfoBuilder trait and recipient builders (`builder`), reused
 # unchanged. Content encryption is the one part not reused: it is implemented here so that it can be
@@ -53,7 +53,7 @@ ml-kem = { version = "0.3.3", features = ["pkcs8"] }
 p256 = { version = "0.14.0", default-features = false, features = ["ecdh", "ecdsa", "pkcs8"] }
 p384 = { version = "0.14.0", default-features = false, features = ["ecdh", "ecdsa", "pkcs8"] }
 p521 = { version = "0.14.0", default-features = false, features = ["ecdh", "ecdsa", "pkcs8"] }
-rsa = { version = "=0.10.0-rc.19", default-features = false, features = ["encoding"] }
+rsa = { version = "=0.10.0-rc.21", default-features = false, features = ["encoding"] }
 sha1 = { version = "0.11.0", default-features = false, features = ["oid"] }
 sha2 = { version = "0.11.0", default-features = false, features = ["oid"] }
 ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc"], optional = true }
@@ -71,11 +71,11 @@ ml-kem = { version = "0.3.3", features = ["pkcs8", "pem"] }
 p256 = { version = "0.14.0", features = ["ecdh", "ecdsa", "pem"] }
 p384 = { version = "0.14.0", features = ["ecdh", "pem"] }
 p521 = { version = "0.14.0", features = ["ecdh", "pem"] }
-rsa = { version = "=0.10.0-rc.19", features = ["sha2"] }
+rsa = { version = "=0.10.0-rc.21" }
 tempfile = "3.27.0"
 # The vetting and SignedData tests' PkiEnvironment: std so that the time of interest defaults to
 # now, and certval's software RSA so that RSA signatures have an implementation to verify them.
-certval = { version = "0.2.0-rc.1", default-features = false, features = ["revocation", "rsa", "std"] }
+certval = { version = "0.2.0-rc.2", default-features = false, features = ["revocation", "rsa", "std"] }
 ml-dsa = { version = "0.1.1", features = ["pkcs8"] }
 # Certificates for the decryption and vetting tests' recipients, issued by a P-256 test CA.
 x509-cert = { version = "0.3.0", features = ["builder", "pem", "std"] }
