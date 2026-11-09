@@ -87,6 +87,43 @@ pub struct CmsEnvironment {
     pub(crate) signer_certificate_sources: Vec<Box<dyn SignerCertificateSource + Send + Sync>>,
 }
 
+/// How many implementations and sources are registered at each plug point, and whether a
+/// `PkiEnvironment` is held; the implementations themselves are not shown.
+impl core::fmt::Debug for CmsEnvironment {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CmsEnvironment")
+            .field("pki_environment", &self.pki_environment.is_some())
+            .field("encrypt_content", &self.encrypt_content_callbacks.len())
+            .field("decrypt_content", &self.decrypt_content_callbacks.len())
+            .field(
+                "encrypt_key_transport",
+                &self.encrypt_key_transport_callbacks.len(),
+            )
+            .field(
+                "encrypt_key_agreement",
+                &self.encrypt_key_agreement_callbacks.len(),
+            )
+            .field("encrypt_kem", &self.encrypt_kem_callbacks.len())
+            .field(
+                "recipient_credential_sources",
+                &self.recipient_credential_sources.len(),
+            )
+            .field(
+                "recipient_certificate_sources",
+                &self.recipient_certificate_sources.len(),
+            )
+            .field(
+                "signing_credential_sources",
+                &self.signing_credential_sources.len(),
+            )
+            .field(
+                "signer_certificate_sources",
+                &self.signer_certificate_sources.len(),
+            )
+            .finish()
+    }
+}
+
 impl CmsEnvironment {
     /// An environment with nothing registered, which declines every operation.
     pub fn new() -> Self {

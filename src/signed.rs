@@ -172,13 +172,18 @@ pub(crate) fn signature_algorithm_digest(
 }
 
 /// The digest a signer uses with `signature_algorithm` (RFC 5754, section 3): the one the
-/// algorithm uses, which `chosen` must then be; otherwise `chosen`, or SHA-256 when neither says.
+/// algorithm uses, which `chosen` must then be; otherwise `chosen`, or when neither says, SHA-512
+/// for ML-DSA (RFC 9881) and SHA-256 for the rest.
 pub(crate) fn signer_digest(
     signature_algorithm: &AlgorithmIdentifierOwned,
     chosen: Option<DigestAlgorithm>,
 ) -> Result<DigestAlgorithm> {
     let Some(used) = signature_algorithm_digest(signature_algorithm)? else {
-        return Ok(chosen.unwrap_or(DigestAlgorithm::Sha256));
+        let default = match signature_algorithm.oid {
+            ID_ML_DSA_44 | ID_ML_DSA_65 | ID_ML_DSA_87 => DigestAlgorithm::Sha512,
+            _ => DigestAlgorithm::Sha256,
+        };
+        return Ok(chosen.unwrap_or(default));
     };
     if let Some(chosen) = chosen {
         if chosen.oid() != used {
@@ -200,6 +205,17 @@ pub struct SignerCredential<S, Sig> {
     certificate: Certificate,
     signer: S,
     _signature: PhantomData<fn() -> Sig>,
+}
+
+impl<S, Sig> core::fmt::Debug for SignerCredential<S, Sig> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SignerCredential")
+            .field(
+                "subject",
+                &format_args!("{}", self.certificate.tbs_certificate().subject()),
+            )
+            .finish()
+    }
 }
 
 impl<S, Sig> SignerCredential<S, Sig> {
@@ -266,6 +282,16 @@ pub struct CredentialSigner<'a, K: SigningKey + ?Sized = dyn SigningCredential +
     key: &'a K,
     signature_algorithm: AlgorithmIdentifierOwned,
     digest: DigestAlgorithm,
+}
+
+impl<K: SigningKey + ?Sized> core::fmt::Debug for CredentialSigner<'_, K> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CredentialSigner")
+            .field("key", &self.key.public_key().algorithm.oid)
+            .field("signature_algorithm", &self.signature_algorithm)
+            .field("digest", &self.digest)
+            .finish()
+    }
 }
 
 impl<'a, K: SigningKey + ?Sized> CredentialSigner<'a, K> {
@@ -368,6 +394,17 @@ impl EncodePublicKey for SignerPublicKey {
 /// certificate.
 pub struct SingleSigningCredential(SharedSigningCredential);
 
+impl core::fmt::Debug for SingleSigningCredential {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SingleSigningCredential")
+            .field(
+                "subject",
+                &format_args!("{}", self.0.certificate().tbs_certificate().subject()),
+            )
+            .finish()
+    }
+}
+
 impl SingleSigningCredential {
     /// A source for `credential` alone.
     pub fn new(credential: SharedSigningCredential) -> Self {
@@ -423,8 +460,29 @@ enum SignerKey<'c> {
     Subject(Name),
 }
 
+impl core::fmt::Debug for SignerKey<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            SignerKey::Explicit(credential) => f
+                .debug_tuple("Explicit")
+                .field(&format_args!(
+                    "{}",
+                    credential.certificate().tbs_certificate().subject()
+                ))
+                .finish(),
+            SignerKey::Identifier(sid) => f.debug_tuple("Identifier").field(sid).finish(),
+            SignerKey::EmailAddress(email) => f.debug_tuple("EmailAddress").field(email).finish(),
+            SignerKey::Subject(subject) => f
+                .debug_tuple("Subject")
+                .field(&format_args!("{subject}"))
+                .finish(),
+        }
+    }
+}
+
 /// One signer of a SignedData: its key, digest algorithm, signature algorithm and any signed
 /// attributes beyond the ones the builder adds.
+#[derive(Debug)]
 pub struct Signer<'c> {
     key: SignerKey<'c>,
     digest: Option<DigestAlgorithm>,
@@ -472,8 +530,8 @@ impl<'c> Signer<'c> {
     }
 
     /// The digest algorithm, which must be the one the signature algorithm uses, when it uses
-    /// one (RFC 5754, section 3); unless set, that one, or SHA-256 for an algorithm hashing
-    /// nothing itself, such as ML-DSA.
+    /// one (RFC 5754, section 3); unless set, that one, or for an algorithm hashing nothing itself,
+    /// SHA-512 for ML-DSA (RFC 9881) and SHA-256 otherwise.
     pub fn digest(mut self, digest: DigestAlgorithm) -> Self {
         self.digest = Some(digest);
         self
@@ -486,7 +544,8 @@ impl<'c> Signer<'c> {
         self
     }
 
-    /// Adds a signed attribute beyond content-type and message-digest, which the builder adds.
+    /// Adds a signed attribute beyond content-type and message-digest, which the builder adds;
+    /// one of those two is refused when the message is built.
     pub fn signed_attribute(mut self, attribute: Attribute) -> Self {
         self.signed_attributes.push(attribute);
         self
@@ -528,6 +587,7 @@ pub struct SignerReport {
 }
 
 /// A built SignedData, with what each signer signed with.
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct BuiltSignedData {
     /// The SignedData, in a ContentInfo.
@@ -546,9 +606,24 @@ enum Content<'c> {
     Digest(DigestAlgorithm, &'c [u8]),
 }
 
+impl core::fmt::Debug for Content<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Content::Encapsulated(content) => {
+                write!(f, "Encapsulated(<{} octets>)", content.len())
+            }
+            Content::Detached(content) => write!(f, "Detached(<{} octets>)", content.len()),
+            Content::Digest(alg, digest) => {
+                write!(f, "Digest({alg:?}, <{} octets>)", digest.len())
+            }
+        }
+    }
+}
+
 /// Builds SignedData, signed by one or more signers through a [`CmsEnvironment`], with the content
 /// encapsulated or, with [`detached`](Self::detached) or [`from_digest`](Self::from_digest), carried
 /// elsewhere.
+#[derive(Debug)]
 pub struct SignedDataBuilder<'c> {
     content_type: ObjectIdentifier,
     content: Content<'c>,
@@ -692,6 +767,18 @@ impl<'c> SignedDataBuilder<'c> {
                     ID_AA_SIGNING_CERTIFICATE_V_2,
                     &signing_certificate,
                 )?);
+            }
+            // RFC 5652, section 11: one content-type and one message-digest attribute, which the
+            // builder has added; a second of either is a message the verifier refuses.
+            if let Some(attr) = signer
+                .signed_attributes
+                .iter()
+                .find(|a| a.oid == ID_CONTENT_TYPE || a.oid == ID_MESSAGE_DIGEST)
+            {
+                return Err(Error::InvalidInput(format!(
+                    "a {} signed attribute, which the builder adds",
+                    attr.oid
+                )));
             }
             attrs.extend(signer.signed_attributes.iter().cloned());
             let signed_attrs = SignedAttributes::try_from(attrs)?;

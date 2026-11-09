@@ -24,7 +24,7 @@ use crate::signed::{signer_matches, DigestAlgorithm};
 
 // ---- Content encryption and decryption
 
-/// The output of content encryption.
+/// The output of content encryption. `Debug` shows the key's length, not the key.
 pub struct ContentEncryptionOutput {
     /// The ciphertext, without the authentication tag.
     pub ciphertext: Vec<u8>,
@@ -34,6 +34,20 @@ pub struct ContentEncryptionOutput {
     pub algorithm: AlgorithmIdentifierOwned,
     /// The authentication tag, present for an authenticated algorithm.
     pub tag: Option<Vec<u8>>,
+}
+
+impl core::fmt::Debug for ContentEncryptionOutput {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ContentEncryptionOutput")
+            .field(
+                "ciphertext",
+                &format_args!("<{} octets>", self.ciphertext.len()),
+            )
+            .field("key", &format_args!("<{} octets>", self.key.len()))
+            .field("algorithm", &self.algorithm)
+            .field("tag", &self.tag)
+            .finish()
+    }
 }
 
 /// Content encryption performed by a cryptographic implementation, registered on a
@@ -189,6 +203,7 @@ where
 }
 
 /// The output of key agreement for one recipient.
+#[derive(Debug)]
 pub struct KeyAgreeOutput {
     /// The originator's ephemeral public key, an uncompressed SEC1 point.
     pub ephemeral_public_key: Vec<u8>,
@@ -242,6 +257,7 @@ where
 }
 
 /// The output of a KEM for one recipient.
+#[derive(Debug)]
 pub struct KemOutput {
     /// The KEM ciphertext.
     pub kem_ct: Vec<u8>,

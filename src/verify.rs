@@ -81,6 +81,7 @@ pub struct VerifiedSigner {
 }
 
 /// A verified SignedData.
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct VerifiedSignedData {
     /// The encapsulated content's type, so that nested content can be processed in turn.

@@ -22,8 +22,11 @@ use cms::{content_info::ContentInfo, signed_data::SignedData, signed_data::Signe
 use common::{
     ca_extensions, day, email_address, environment, issue_by, key_usage, rng, settings, Ca,
 };
-use const_oid::db::rfc5911::{ID_DATA, ID_ENVELOPED_DATA};
-use der::{asn1::OctetString, Any, Decode, Encode};
+use const_oid::db::rfc5911::{ID_CONTENT_TYPE, ID_DATA, ID_ENVELOPED_DATA};
+use der::{
+    asn1::{OctetString, SetOfVec},
+    Any, Decode, Encode,
+};
 use elliptic_curve::Generate as _;
 use p256::pkcs8::{EncodePrivateKey, EncodePublicKey};
 use x509_cert::{
@@ -383,6 +386,44 @@ fn a_named_signing_credential_refused_for_key_usage_says_so() {
             .build(&env),
         Err(Error::NoMatchingSigner)
     ));
+}
+
+/// The builder adds content-type and message-digest; a second one from the caller would make a
+/// message the verifier refuses, so the build refuses it first.
+#[test]
+fn a_signed_attribute_the_builder_adds_is_refused() {
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let signatory = rsa_signatory(&ca, 33);
+    let credential = signatory.credential();
+    let mut values = SetOfVec::new();
+    values.insert(Any::encode_from(&ID_DATA).unwrap()).unwrap();
+    let content_type = x509_cert::attr::Attribute {
+        oid: ID_CONTENT_TYPE,
+        values,
+    };
+    assert!(matches!(
+        SignedDataBuilder::new(MESSAGE)
+            .add_signer(Signer::explicit(&credential).signed_attribute(content_type))
+            .build(&env),
+        Err(Error::InvalidInput(_))
+    ));
+}
+
+/// Debug on a key names its certificate and the kind of key, never the key; on an environment,
+/// what is registered where.
+#[test]
+fn debug_output_names_keys_without_showing_them() {
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let signatory = rsa_signatory(&ca, 34);
+    let shown = format!("{:?}", signatory.credential());
+    assert!(shown.contains("CN=entity 34"), "{shown}");
+    assert!(shown.contains("Rsa"), "{shown}");
+    assert!(shown.len() < 200, "{shown}");
+    let shown = format!("{env:?}");
+    assert!(shown.contains("pki_environment: true"), "{shown}");
+    assert!(shown.contains("encrypt_content: 1"), "{shown}");
 }
 
 #[test]
@@ -992,6 +1033,34 @@ fn signed_and_enveloped_layers_are_unwrapped_in_either_order() {
 }
 
 // ---- ML-DSA
+
+/// RFC 9881: an ML-DSA signer's message digest is SHA-512 unless set.
+#[cfg(feature = "pqc")]
+#[test]
+fn an_ml_dsa_signer_digests_with_sha512_by_default() {
+    use ml_dsa::common::Generate as _;
+    use ml_dsa::signature::Keypair;
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let key = ml_dsa::SigningKey::<ml_dsa::MlDsa65>::generate_from_rng(&mut rng());
+    let spki = key.verifying_key().to_public_key_der().unwrap();
+    let cert = ca.issue(
+        spki.as_bytes(),
+        35,
+        vec![key_usage(KeyUsages::DigitalSignature)],
+        day(),
+    );
+    let signatory = Signatory {
+        cert,
+        pkcs8: key.to_pkcs8_der().unwrap().as_bytes().to_vec(),
+    };
+    let ci = sign(&env, Signer::explicit(&signatory.credential()));
+    assert_eq!(
+        signer_digest_algorithms(&ci),
+        vec![DigestAlgorithm::Sha512.oid()]
+    );
+    assert_verifies_vetted(&env, &ci, "ML-DSA-65 with its default digest");
+}
 
 #[cfg(feature = "pqc")]
 macro_rules! ml_dsa_round_trip {
