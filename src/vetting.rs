@@ -11,8 +11,8 @@ use core::fmt;
 
 use certval::{
     check_revocation_local, validate_path_rfc5280, CertificationPath, CertificationPathResults,
-    CertificationPathSettings, ExtensionProcessing, PDVCertificate, PathValidationStatus,
-    PkiEnvironment, EXTS_OF_INTEREST,
+    CertificationPathSettings, DeferDecodeSigned, ExtensionProcessing, PDVCertificate,
+    PathValidationStatus, PkiEnvironment, EXTS_OF_INTEREST,
 };
 use const_oid::db::{
     fips203::{ID_ALG_ML_KEM_1024, ID_ALG_ML_KEM_512, ID_ALG_ML_KEM_768},
@@ -184,7 +184,16 @@ impl CmsEnvironment {
             .map(|c| pdv_certificate(c))
             .collect::<Result<Vec<_>>>()?;
         let mut prepared = vec![];
-        prepare_paths(pe, &target, &target, &decoded, &mut vec![], &mut prepared);
+        let mut budget = MAX_PREPARED_CANDIDATES;
+        prepare_paths(
+            pe,
+            &target,
+            &target,
+            &decoded,
+            &mut vec![],
+            &mut prepared,
+            &mut budget,
+        );
         for (path, used) in prepared {
             let from_message = used.into_iter().map(|i| candidates[i].clone()).collect();
             let mut results = CertificationPathResults::new();
@@ -248,6 +257,11 @@ impl CmsEnvironment {
 /// The longest chain of intermediates path preparation follows.
 const MAX_PREPARED_INTERMEDIATES: usize = 8;
 
+/// The most issuer candidates one path preparation examines, over all of its branches. A message's
+/// CA certificates are its sender's chain and perhaps a few cross-certificates; the bound keeps a
+/// message stuffed with CA certificates bearing one issuer's name from occupying the verifier.
+const MAX_PREPARED_CANDIDATES: usize = 64;
+
 fn pdv_certificate(cert: &Certificate) -> Result<PDVCertificate> {
     let mut pdv = PDVCertificate::try_from(cert.to_der()?.as_slice())?;
     pdv.parse_extensions(EXTS_OF_INTEREST);
@@ -299,9 +313,12 @@ fn vetted(
 }
 
 /// Prepares the paths from `current` up to a trust anchor, following issuer names through
-/// `candidates` and the `PkiEnvironment`'s intermediates. `chain` holds the certificates above the
-/// target so far, each with its position in `candidates` if it came from there; each path found is
-/// pushed to `paths` with the positions of the candidates it used.
+/// `candidates` and the `PkiEnvironment`'s intermediates, descending only into a certificate whose
+/// key verifies the one below it. `chain` holds the certificates above the target so far, each
+/// with its position in `candidates` if it came from there; each path found is pushed to `paths`
+/// with the positions of the candidates it used. `budget` is the number of candidates still to be
+/// examined; the walk stops when it reaches zero.
+#[allow(clippy::too_many_arguments)]
 fn prepare_paths(
     pe: &PkiEnvironment,
     target: &PDVCertificate,
@@ -309,6 +326,7 @@ fn prepare_paths(
     candidates: &[PDVCertificate],
     chain: &mut Vec<(PDVCertificate, Option<usize>)>,
     paths: &mut Vec<(CertificationPath, Vec<usize>)>,
+    budget: &mut usize,
 ) {
     if let Ok(anchor) = pe.get_trust_anchor_for_target(current) {
         // The chain runs from the target's issuer upward; a path's intermediates run from the one
@@ -338,10 +356,35 @@ fn prepare_paths(
         if next == target || chain.iter().any(|(c, _)| c == next) {
             continue;
         }
+        if *budget == 0 {
+            debug!("path preparation stopped after {MAX_PREPARED_CANDIDATES} issuer candidates");
+            return;
+        }
+        *budget -= 1;
+        if !signed_by(pe, current, next) {
+            continue;
+        }
         chain.push((next.clone(), candidate));
-        prepare_paths(pe, target, next, candidates, chain, paths);
+        prepare_paths(pe, target, next, candidates, chain, paths, budget);
         chain.pop();
     }
+}
+
+/// Whether `issuer`'s key verifies `cert`'s signature. An algorithm no verifier in `pe` implements
+/// and a certificate whose signature does not decode are `false`, as a path through `issuer` would
+/// not validate either.
+fn signed_by(pe: &PkiEnvironment, cert: &PDVCertificate, issuer: &PDVCertificate) -> bool {
+    let Ok(signed) = DeferDecodeSigned::from_der(cert.as_bytes()) else {
+        return false;
+    };
+    pe.verify_signature_message(
+        pe,
+        &signed.tbs_field,
+        &signed.signature,
+        &signed.signature_algorithm,
+        issuer.decoded().tbs_certificate().subject_public_key_info(),
+    )
+    .is_ok()
 }
 
 impl From<certval::Error> for Error {
