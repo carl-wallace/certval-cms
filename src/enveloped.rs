@@ -70,6 +70,19 @@ pub struct EnvelopedDataBuilder<'c, R: ?Sized> {
     recipients: Recipients<'c, R>,
 }
 
+impl<R: ?Sized> core::fmt::Debug for EnvelopedDataBuilder<'_, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EnvelopedDataBuilder")
+            .field("content", &format_args!("<{} octets>", self.content.len()))
+            .field("content_type", &self.content_type)
+            .field("algorithm", &self.algorithm)
+            .field("originator_info", &self.originator_info.is_some())
+            .field("unprotected_attrs", &self.unprotected_attrs)
+            .field("recipients", &self.recipients.len())
+            .finish()
+    }
+}
+
 impl<'c, R: CryptoRng + ?Sized> EnvelopedDataBuilder<'c, R> {
     /// A builder encrypting `content`, of type id-data, with `algorithm`, which must not be an
     /// authenticated algorithm (those are for [`AuthEnvelopedDataBuilder`]).
@@ -198,6 +211,20 @@ pub struct AuthEnvelopedDataBuilder<'c, R: ?Sized> {
     auth_attrs: Option<AuthAttributes>,
     unauth_attrs: Option<UnauthAttributes>,
     recipients: Recipients<'c, R>,
+}
+
+impl<R: ?Sized> core::fmt::Debug for AuthEnvelopedDataBuilder<'_, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AuthEnvelopedDataBuilder")
+            .field("content", &format_args!("<{} octets>", self.content.len()))
+            .field("content_type", &self.content_type)
+            .field("algorithm", &self.algorithm)
+            .field("originator_info", &self.originator_info.is_some())
+            .field("auth_attrs", &self.auth_attrs)
+            .field("unauth_attrs", &self.unauth_attrs)
+            .field("recipients", &self.recipients.len())
+            .finish()
+    }
 }
 
 impl<'c, R: CryptoRng + ?Sized> AuthEnvelopedDataBuilder<'c, R> {

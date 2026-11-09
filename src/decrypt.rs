@@ -45,6 +45,20 @@ pub struct DecryptedContent {
     pub auth_attrs: Option<AuthAttributes>,
 }
 
+/// Shows the content's length, not the content.
+impl core::fmt::Debug for DecryptedContent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DecryptedContent")
+            .field("content_type", &self.content_type)
+            .field("content", &format_args!("<{} octets>", self.content.len()))
+            .field("recipient", &self.recipient)
+            .field("recipient_index", &self.recipient_index)
+            .field("credential", &self.credential)
+            .field("auth_attrs", &self.auth_attrs)
+            .finish()
+    }
+}
+
 /// A credential found for a recipient, borrowed when passed in and shared when a source found it.
 enum Found<'a> {
     Explicit(&'a dyn RecipientCredential),

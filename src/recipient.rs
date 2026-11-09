@@ -160,6 +160,16 @@ pub struct KeyTransRecipient<'e, R: ?Sized> {
     _rng: PhantomData<R>,
 }
 
+impl<R: ?Sized> core::fmt::Debug for KeyTransRecipient<'_, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("KeyTransRecipient")
+            .field("rid", &self.rid)
+            .field("alg", &self.alg)
+            .field("vetting", &self.vetting)
+            .finish()
+    }
+}
+
 impl<'e, R: ?Sized> KeyTransRecipient<'e, R> {
     /// A recipient identified by `rid`, holding the RSA key in `spki`.
     pub fn new(
@@ -233,6 +243,18 @@ pub struct KeyAgreeRecipient<'e, R: ?Sized> {
     wrap: KeyWrapAlgorithm,
     ukm: Option<Vec<u8>>,
     _rng: PhantomData<R>,
+}
+
+impl<R: ?Sized> core::fmt::Debug for KeyAgreeRecipient<'_, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("KeyAgreeRecipient")
+            .field("rid", &self.rid)
+            .field("alg", &self.alg)
+            .field("wrap", &self.wrap)
+            .field("ukm", &self.ukm.as_ref().map(Vec::len))
+            .field("vetting", &self.vetting)
+            .finish()
+    }
 }
 
 impl<'e, R: ?Sized> KeyAgreeRecipient<'e, R> {
@@ -349,6 +371,19 @@ pub struct KemRecipient<'e, R: ?Sized> {
     wrap: KeyWrapAlgorithm,
     ukm: Option<Vec<u8>>,
     _rng: PhantomData<R>,
+}
+
+impl<R: ?Sized> core::fmt::Debug for KemRecipient<'_, R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("KemRecipient")
+            .field("rid", &self.rid)
+            .field("kem", &self.spki.algorithm.oid)
+            .field("kdf", &self.kdf)
+            .field("wrap", &self.wrap)
+            .field("ukm", &self.ukm.as_ref().map(Vec::len))
+            .field("vetting", &self.vetting)
+            .finish()
+    }
 }
 
 impl<'e, R: ?Sized> KemRecipient<'e, R> {

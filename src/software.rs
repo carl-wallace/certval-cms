@@ -334,7 +334,8 @@ pub fn encrypt_kem_rust_crypto(
 ///                 expandedKey OCTET STRING } }
 /// ```
 ///
-/// It holds private key material, so it implements neither `Debug` nor `Clone`.
+/// It holds private key material: `Debug` shows the form and the lengths, not the octets, and
+/// there is no `Clone`.
 #[derive(Choice)]
 pub enum SeedOrExpandedKey {
     /// The seed the key is generated from.
@@ -346,6 +347,16 @@ pub enum SeedOrExpandedKey {
     Both(SeedAndExpandedKey),
 }
 
+impl core::fmt::Debug for SeedOrExpandedKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            SeedOrExpandedKey::Seed(seed) => write!(f, "Seed(<{} octets>)", seed.len()),
+            SeedOrExpandedKey::ExpandedKey(key) => write!(f, "ExpandedKey(<{} octets>)", key.len()),
+            SeedOrExpandedKey::Both(both) => f.debug_tuple("Both").field(both).finish(),
+        }
+    }
+}
+
 /// The `both` form of [`SeedOrExpandedKey`].
 #[derive(Sequence)]
 pub struct SeedAndExpandedKey {
@@ -353,6 +364,18 @@ pub struct SeedAndExpandedKey {
     pub seed: OctetString,
     /// The expanded private key, which must be the one the seed generates.
     pub expanded_key: OctetString,
+}
+
+impl core::fmt::Debug for SeedAndExpandedKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SeedAndExpandedKey")
+            .field("seed", &format_args!("<{} octets>", self.seed.len()))
+            .field(
+                "expanded_key",
+                &format_args!("<{} octets>", self.expanded_key.len()),
+            )
+            .finish()
+    }
 }
 
 /// Decodes an RFC 9935 ML-KEM private key into `$key`, from any of its three forms. A key in the
@@ -400,11 +423,39 @@ enum RecipientKeyMaterial {
     MlKem1024(Box<ml_kem::DecapsulationKey1024>),
 }
 
+/// The kind of key, not the key.
+impl core::fmt::Debug for RecipientKeyMaterial {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            RecipientKeyMaterial::Rsa(_) => "Rsa",
+            RecipientKeyMaterial::P256(_) => "P256",
+            RecipientKeyMaterial::P384(_) => "P384",
+            RecipientKeyMaterial::P521(_) => "P521",
+            RecipientKeyMaterial::MlKem512(_) => "MlKem512",
+            RecipientKeyMaterial::MlKem768(_) => "MlKem768",
+            RecipientKeyMaterial::MlKem1024(_) => "MlKem1024",
+        })
+    }
+}
+
 /// A [`RecipientCredential`] holding a private key in memory and decrypting with RustCrypto: RSA
 /// key transport, ECDH on P-256, P-384 or P-521, or ML-KEM-512, -768 or -1024.
 pub struct SoftwareRecipientKey {
     certificate: Certificate,
     key: RecipientKeyMaterial,
+}
+
+/// The certificate's subject and the kind of key, not the key.
+impl core::fmt::Debug for SoftwareRecipientKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SoftwareRecipientKey")
+            .field(
+                "subject",
+                &format_args!("{}", self.certificate.tbs_certificate().subject()),
+            )
+            .field("key", &self.key)
+            .finish()
+    }
 }
 
 impl SoftwareRecipientKey {
@@ -579,6 +630,24 @@ enum SigningKeyMaterial {
     MlDsa87(Box<ml_dsa::ExpandedSigningKey<ml_dsa::MlDsa87>>),
 }
 
+/// The kind of key, not the key.
+impl core::fmt::Debug for SigningKeyMaterial {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            SigningKeyMaterial::Rsa(_) => "Rsa",
+            SigningKeyMaterial::P256(_) => "P256",
+            SigningKeyMaterial::P384(_) => "P384",
+            SigningKeyMaterial::P521(_) => "P521",
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::MlDsa44(_) => "MlDsa44",
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::MlDsa65(_) => "MlDsa65",
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::MlDsa87(_) => "MlDsa87",
+        })
+    }
+}
+
 /// Decodes an RFC 9881 ML-DSA private key with parameter set `$params`, from any of its three
 /// forms. A key in the `both` form whose expanded key is not the one its seed generates is refused.
 #[cfg(feature = "pqc")]
@@ -666,10 +735,20 @@ macro_rules! ecdsa_sign {
 /// RustCrypto as [`SoftwareSigningKey`] does: e.g. a key signing its own certificate request or a
 /// root's self-signed certificate.
 ///
-/// It holds private key material, so it implements neither `Debug` nor `Clone`.
+/// It holds private key material: `Debug` shows the kind of key, not the key, and there is no
+/// `Clone`.
 pub struct SoftwareKey {
     public_key: SubjectPublicKeyInfoOwned,
     key: SigningKeyMaterial,
+}
+
+impl core::fmt::Debug for SoftwareKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SoftwareKey")
+            .field("public_key", &self.public_key.algorithm.oid)
+            .field("key", &self.key)
+            .finish()
+    }
 }
 
 impl SoftwareKey {
@@ -788,6 +867,19 @@ impl SigningKey for SoftwareKey {
 pub struct SoftwareSigningKey {
     certificate: Certificate,
     key: SoftwareKey,
+}
+
+/// The certificate's subject and the kind of key, not the key.
+impl core::fmt::Debug for SoftwareSigningKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SoftwareSigningKey")
+            .field(
+                "subject",
+                &format_args!("{}", self.certificate.tbs_certificate().subject()),
+            )
+            .field("key", &self.key.key)
+            .finish()
+    }
 }
 
 impl SoftwareSigningKey {

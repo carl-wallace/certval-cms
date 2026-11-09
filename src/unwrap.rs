@@ -21,6 +21,7 @@ use crate::verify::{SignerPolicy, VerifiedSignedData};
 const MAX_LAYERS: usize = 8;
 
 /// One layer of nested content, as it was processed.
+#[derive(Debug)]
 #[non_exhaustive]
 pub enum Layer {
     /// A SignedData, verified.
@@ -30,6 +31,7 @@ pub enum Layer {
 }
 
 /// Nested content, with each layer's result, outermost first, and the innermost content.
+#[derive(Debug)]
 #[non_exhaustive]
 pub struct Unwrapped {
     /// The layers, outermost first.

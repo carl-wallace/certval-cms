@@ -2,7 +2,7 @@
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), except that
 an increase to the minimum supported Rust version is not treated as a breaking change.
 
-## [Unreleased]
+## [0.1.0-rc.1]
 
 Initial release. Builds, decrypts, signs and verifies EnvelopedData, AuthEnvelopedData and
 SignedData with every cryptographic operation performed through a plug point on a `CmsEnvironment`:

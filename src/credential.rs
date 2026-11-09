@@ -32,6 +32,17 @@ use crate::error::{Error, Result};
 /// certificate.
 pub struct SingleRecipientCredential(SharedRecipientCredential);
 
+impl core::fmt::Debug for SingleRecipientCredential {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SingleRecipientCredential")
+            .field(
+                "subject",
+                &format_args!("{}", self.0.certificate().tbs_certificate().subject()),
+            )
+            .finish()
+    }
+}
+
 impl SingleRecipientCredential {
     /// A source for `credential` alone.
     pub fn new(credential: SharedRecipientCredential) -> Self {

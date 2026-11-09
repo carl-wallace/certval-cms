@@ -56,6 +56,19 @@ jobs:
       - run: cargo clippy --all-targets
       - run: cargo clippy --all-targets --all-features
 
+  # docs.rs builds with nightly and --cfg docsrs, which turns on doc_cfg's feature badges; the same
+  # build here catches broken intra-doc links before publication.
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: certval-cms
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+
   # A job of its own so it can be a required check without making clippy one: each Rust release
   # adds lints, and a required clippy would fail unrelated pull requests.
   rustfmt:

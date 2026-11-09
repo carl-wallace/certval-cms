@@ -119,7 +119,7 @@ ECDH with the SHA-1 X9.63 KDF, OpenSSL's default for `cms -encrypt`, is not supp
 
 `SignedDataBuilder` signs with one or more signers, each with its own credential and signature
 algorithm, which defaults from the key, or from what the credential prefers; the digest algorithm
-is the one the signature algorithm uses, or SHA-256 for ML-DSA, which uses none, unless set. Every
+is the one the signature algorithm uses, or SHA-512 for ML-DSA, which uses none, unless set. Every
 signer's signed attributes contain content-type and message-digest, an ESSCertIDv2 of
 its certificate in a signing-certificate-v2 attribute (RFC 5035) unless `without_ess_cert_id` is
 set, a signing time when one is given, and any others the caller adds. The content is encapsulated,
@@ -172,7 +172,7 @@ key, or both, which is the form OpenSSL writes.
 | Crate (`cms` feature) | Content | Key transport | Key agreement | KEM | Credentials and sources |
 |---|---|---|---|---|---|
 | certval-openssl | AES-CBC, AES-GCM | encrypt | encrypt (ECDH and X9.63 in OpenSSL) | encrypt (ML-KEM, OpenSSL 3.5 or later) | OpenSSL keys: decrypt all three recipient types, sign |
-| certval-security-framework | AES-CBC (CommonCrypto) | encrypt | encrypt (ECDH and X9.63 in Security.framework) | | `SecKey`s and the keychain's identities: decrypt, sign |
+| certval-security-framework | AES-CBC (CommonCrypto) | encrypt | encrypt (ECDH and X9.63 in Security.framework) | encrypt (ML-KEM-768 and -1024 in CryptoKit, with `pqc`) | `SecKey`s and the keychain's identities: decrypt, sign; CryptoKit keys, as a seed or in the Secure Enclave: decrypt, sign ML-DSA |
 | certval-cng | AES-CBC, AES-GCM (BCrypt) | encrypt | encrypt (ECDH in BCrypt, X9.63 here) | | NCrypt keys and the certificate store: decrypt, sign |
 | certval-awslc | AES-CBC, AES-GCM | encrypt | encrypt (ECDH in AWS-LC, X9.63 here) | encrypt (ML-KEM) | AWS-LC keys: decrypt all three recipient types, sign |
 | certval-pkcs11 | | | | | keys on a token: decrypt all three recipient types, sign; the token's certificates as a source |
