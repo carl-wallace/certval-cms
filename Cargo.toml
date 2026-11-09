@@ -2,9 +2,10 @@
 name = "certval-cms"
 version = "0.1.0-rc.1"
 description = """
-Cryptographic Message Syntax (CMS) for certval. Builds EnvelopedData and AuthEnvelopedData with
-content encryption performed by a pluggable implementation, so a message can be encrypted with the
-platform's validated cryptographic module rather than an in-process software implementation.
+Cryptographic Message Syntax (CMS) for certval. Builds, decrypts, signs and verifies EnvelopedData,
+AuthEnvelopedData and SignedData with every cryptographic operation performed by a pluggable
+implementation, so a message can be processed with the platform's validated cryptographic module
+rather than an in-process software implementation.
 """
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/carl-wallace/certval-cms"
@@ -31,7 +32,7 @@ certval = { version = "0.2.0-rc.2", default-features = false, features = ["revoc
 
 # The ASN.1 types, reused unchanged. The builders are this crate's, so that every cryptographic
 # operation can be routed to a provider, and so that nothing needs `std`.
-cms = "0.3.0-rc.0"
+cms = "=0.3.0-rc.1"
 const-oid = { version = "0.10.2", features = ["db"] }
 der = { version = "0.8.1", features = ["alloc", "derive", "oid"] }
 spki = "0.8.0"
@@ -67,7 +68,7 @@ log = "0.4.35"
 [dev-dependencies]
 # The tests decrypt what is built, with RustCrypto and with the openssl command. cms's own key
 # transport recipient builder stands in for a recipient whose key management lies elsewhere.
-cms = { version = "0.3.0-rc.0", features = ["builder"] }
+cms = { version = "=0.3.0-rc.1", features = ["builder"] }
 ml-kem = { version = "0.3.3", features = ["pkcs8", "pem"] }
 p256 = { version = "0.14.0", features = ["ecdh", "ecdsa", "pem"] }
 p384 = { version = "0.14.0", features = ["ecdh", "pem"] }
