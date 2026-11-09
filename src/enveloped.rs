@@ -9,7 +9,6 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 use cms::{
     authenticated_data::MessageAuthenticationCode,
     authenveloped_data::{AuthAttributes, AuthEnvelopedData, UnauthAttributes},
-    builder::RecipientInfoBuilder,
     cert::CertificateChoices,
     content_info::{CmsVersion, ContentInfo},
     enveloped_data::{
@@ -17,7 +16,9 @@ use cms::{
     },
     revocation::RevocationInfoChoice,
 };
-use const_oid::db::rfc5911::{ID_CT_AUTH_ENVELOPED_DATA, ID_DATA, ID_ENVELOPED_DATA};
+use const_oid::db::rfc5911::{
+    ID_CONTENT_TYPE, ID_CT_AUTH_ENVELOPED_DATA, ID_DATA, ID_ENVELOPED_DATA,
+};
 use const_oid::ObjectIdentifier;
 use der::{
     asn1::{Any, OctetString},
@@ -27,9 +28,12 @@ use rand_core::CryptoRng;
 use x509_cert::attr::Attributes as UnprotectedAttributes;
 
 use crate::algorithms::ContentEncryptionAlgorithm;
+use crate::decrypt::content_type_attribute;
 use crate::environment::CmsEnvironment;
 use crate::environment_traits::ContentEncryptionOutput;
 use crate::error::{Error, Result};
+use crate::recipient::RecipientInfoBuilder;
+use crate::signed::attribute;
 
 type Recipients<'c, R> = Vec<Box<dyn RecipientInfoBuilder<Rng = R> + 'c>>;
 
@@ -44,7 +48,7 @@ fn build_recipients<R: CryptoRng + ?Sized>(
     let infos = recipients
         .iter_mut()
         .map(|ri| ri.build_with_rng(&content.key, rng))
-        .collect::<core::result::Result<Vec<RecipientInfo>, _>>()?;
+        .collect::<Result<Vec<RecipientInfo>>>()?;
     Ok(RecipientInfos::try_from(infos)?)
 }
 
@@ -255,9 +259,10 @@ impl<'c, R: CryptoRng + ?Sized> AuthEnvelopedDataBuilder<'c, R> {
     /// Encrypts the content through `env` and builds the AuthEnvelopedData. `rng` is passed to
     /// the recipient builders.
     pub fn build(&mut self, env: &CmsEnvironment, rng: &mut R) -> Result<AuthEnvelopedData> {
+        let auth_attrs = self.authenticated_attributes()?;
         // RFC 5083, section 2.1: the authenticated attributes are input to the authentication as
         // their DER encoding with an EXPLICIT SET OF tag, not the IMPLICIT [1] they are sent with.
-        let aad = match &self.auth_attrs {
+        let aad = match &auth_attrs {
             Some(attrs) => Some(attrs.to_der()?),
             None => None,
         };
@@ -277,10 +282,36 @@ impl<'c, R: CryptoRng + ?Sized> AuthEnvelopedDataBuilder<'c, R> {
                 content_enc_alg: content.algorithm,
                 encrypted_content: Some(OctetString::new(content.ciphertext)?),
             },
-            auth_attrs: self.auth_attrs.clone(),
+            auth_attrs,
             mac: MessageAuthenticationCode::new(tag)?,
             unauth_attrs: self.unauth_attrs.clone(),
         })
+    }
+
+    /// The authenticated attributes to send. RFC 5083, section 2.1: the content type is outside
+    /// what the tag covers, so for a type other than id-data the attributes must be present, and a
+    /// content-type attribute binds the type; one is added when the caller gave none, and one
+    /// giving another type is refused.
+    fn authenticated_attributes(&self) -> Result<Option<AuthAttributes>> {
+        let given = match &self.auth_attrs {
+            Some(attrs) => content_type_attribute(attrs)?,
+            None => None,
+        };
+        if let Some(given) = given {
+            if given != self.content_type {
+                return Err(Error::InvalidInput(alloc::format!(
+                    "a content-type attribute of {given} for {} content",
+                    self.content_type
+                )));
+            }
+            return Ok(self.auth_attrs.clone());
+        }
+        if self.content_type == ID_DATA {
+            return Ok(self.auth_attrs.clone());
+        }
+        let mut attrs = self.auth_attrs.clone().unwrap_or_default();
+        attrs.insert(attribute(ID_CONTENT_TYPE, &self.content_type)?)?;
+        Ok(Some(attrs))
     }
 
     /// As [`build`](Self::build), wrapped in a ContentInfo.

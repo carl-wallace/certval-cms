@@ -15,13 +15,13 @@ use certval_cms::{
     unpad_pkcs1v15, AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm,
     CredentialOrigin, EnvelopedDataBuilder, Error, GcmParameters, KdfAlgorithm, KemRecipient,
     KeyAgreeRecipient, KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm,
-    KeyWrapAlgorithm, RecipientCredential, SingleRecipientCredential, SoftwareRecipientKey,
+    KeyWrapAlgorithm, RecipientCredential, RecipientInfoBuilder, SingleRecipientCredential,
+    SoftwareRecipientKey,
 };
 use cms::{
-    builder::RecipientInfoBuilder, cert::x509::attr::Attribute, content_info::ContentInfo,
-    enveloped_data::RecipientIdentifier,
+    cert::x509::attr::Attribute, content_info::ContentInfo, enveloped_data::RecipientIdentifier,
 };
-use const_oid::db::rfc5911::{ID_CONTENT_TYPE, ID_DATA};
+use const_oid::db::rfc5911::{ID_CONTENT_TYPE, ID_DATA, ID_ENVELOPED_DATA};
 use const_oid::db::rfc5912::ID_CE_SUBJECT_KEY_IDENTIFIER;
 use der::{
     asn1::{OctetString, SetOfVec},
@@ -187,26 +187,6 @@ fn content_type_attrs() -> SetOfVec<Attribute> {
     attrs
 }
 
-/// A boxed recipient builder, which `cms` does not implement the trait for.
-struct Boxed<'e>(Box<dyn RecipientInfoBuilder<Rng = Rng> + 'e>);
-
-impl RecipientInfoBuilder for Boxed<'_> {
-    type Rng = Rng;
-    fn recipient_info_type(&self) -> cms::builder::RecipientInfoType {
-        self.0.recipient_info_type()
-    }
-    fn recipient_info_version(&self) -> cms::content_info::CmsVersion {
-        self.0.recipient_info_version()
-    }
-    fn build_with_rng(
-        &mut self,
-        content_encryption_key: &[u8],
-        rng: &mut Rng,
-    ) -> Result<cms::enveloped_data::RecipientInfo, cms::builder::Error> {
-        self.0.build_with_rng(content_encryption_key, rng)
-    }
-}
-
 /// A message to `recipients` with `alg`: EnvelopedData for CBC, and AuthEnvelopedData with a
 /// content-type authenticated attribute for GCM.
 fn envelop<'e>(
@@ -218,13 +198,13 @@ fn envelop<'e>(
         let mut builder = AuthEnvelopedDataBuilder::new(MESSAGE, alg).unwrap();
         builder.auth_attrs(content_type_attrs());
         for r in recipients {
-            builder.add_recipient(Boxed(r));
+            builder.add_recipient(r);
         }
         builder.build_content_info(env, &mut rng()).unwrap()
     } else {
         let mut builder = EnvelopedDataBuilder::new(MESSAGE, alg).unwrap();
         for r in recipients {
-            builder.add_recipient(Boxed(r));
+            builder.add_recipient(r);
         }
         builder.build_content_info(env, &mut rng()).unwrap()
     }
@@ -667,6 +647,106 @@ fn a_tag_shorter_than_rfc_5084_allows_is_refused() {
         env.decrypt_enveloped_data(&shortened, Some(&recipient.credential())),
         Err(Error::InvalidInput(_))
     ));
+}
+
+/// RFC 5083, section 2.1: the content type is outside what the tag covers. For a type other than
+/// id-data the builder adds a content-type authenticated attribute, and decryption requires the
+/// attribute to give the type the message carries.
+#[test]
+fn a_content_type_other_than_id_data_is_bound_by_an_authenticated_attribute() {
+    let env = software();
+    let recipient = rsa_recipient(18, true);
+    let credential = recipient.credential();
+    let recipient_builder = || key_trans(&env, &recipient, KeyTransportAlgorithm::RsaOaepSha256);
+    let ci = AuthEnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes256Gcm)
+        .unwrap()
+        .content_type(ID_ENVELOPED_DATA)
+        .add_recipient(recipient_builder())
+        .build_content_info(&env, &mut rng())
+        .unwrap();
+    let decrypted = env.decrypt_enveloped_data(&ci, Some(&credential)).unwrap();
+    assert_eq!(decrypted.content_type, ID_ENVELOPED_DATA);
+    let attrs = decrypted.auth_attrs.unwrap();
+    let content_type_attr = attrs.iter().find(|a| a.oid == ID_CONTENT_TYPE).unwrap();
+    assert_eq!(
+        content_type_attr.values.iter().collect::<Vec<_>>(),
+        vec![&Any::encode_from(&ID_ENVELOPED_DATA).unwrap()]
+    );
+
+    // The type relabelled after building no longer matches the attribute.
+    let mut aed =
+        cms::authenveloped_data::AuthEnvelopedData::from_der(&ci.content.to_der().unwrap())
+            .unwrap();
+    aed.auth_encrypted_content_info.content_type = ID_DATA;
+    let relabelled = ContentInfo {
+        content_type: ci.content_type,
+        content: Any::encode_from(&aed).unwrap(),
+    };
+    assert!(matches!(
+        env.decrypt_enveloped_data(&relabelled, Some(&credential)),
+        Err(Error::InvalidInput(_))
+    ));
+
+    // A type other than id-data with no attribute at all is malformed.
+    aed.auth_encrypted_content_info.content_type = ID_ENVELOPED_DATA;
+    aed.auth_attrs = None;
+    let unbound = ContentInfo {
+        content_type: ci.content_type,
+        content: Any::encode_from(&aed).unwrap(),
+    };
+    assert!(matches!(
+        env.decrypt_enveloped_data(&unbound, Some(&credential)),
+        Err(Error::InvalidInput(_))
+    ));
+
+    // An attribute the caller gives must agree with the type.
+    let mut builder =
+        AuthEnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes256Gcm).unwrap();
+    builder
+        .content_type(ID_ENVELOPED_DATA)
+        .auth_attrs(content_type_attrs())
+        .add_recipient(recipient_builder());
+    assert!(matches!(
+        builder.build_content_info(&env, &mut rng()),
+        Err(Error::InvalidInput(_))
+    ));
+}
+
+/// A RecipientInfo for another recipient that is malformed, here OAEP with its parameters
+/// missing, concerns only a credential for that recipient; ours decrypts.
+#[test]
+fn a_malformed_recipient_info_for_another_recipient_does_not_abort_decryption() {
+    let env = software();
+    let (first, second) = (rsa_recipient(19, true), rsa_recipient(20, true));
+    let ci = envelop(
+        &env,
+        ContentEncryptionAlgorithm::Aes256Cbc,
+        vec![
+            key_trans(&env, &first, KeyTransportAlgorithm::RsaOaepSha256),
+            key_trans(&env, &second, KeyTransportAlgorithm::RsaOaepSha256),
+        ],
+    );
+    let mut ed =
+        cms::enveloped_data::EnvelopedData::from_der(&ci.content.to_der().unwrap()).unwrap();
+    let mut infos: Vec<_> = ed.recip_infos.0.iter().cloned().collect();
+    let cms::enveloped_data::RecipientInfo::Ktri(ktri) = &mut infos[0] else {
+        panic!("not key transport");
+    };
+    ktri.key_enc_alg.parameters = None;
+    let malformed_rid = ktri.rid.clone();
+    ed.recip_infos = cms::enveloped_data::RecipientInfos::try_from(infos).unwrap();
+    let changed = ContentInfo {
+        content_type: ci.content_type,
+        content: Any::encode_from(&ed).unwrap(),
+    };
+    for recipient in [&first, &second] {
+        let result = env.decrypt_enveloped_data(&changed, Some(&recipient.credential()));
+        if certval_cms::recipient_identifier(&recipient.cert).unwrap() == malformed_rid {
+            assert!(matches!(result, Err(Error::InvalidInput(_))));
+        } else {
+            assert_eq!(result.unwrap().content.as_slice(), MESSAGE);
+        }
+    }
 }
 
 // ---- PKCS #1 v1.5 unpadding

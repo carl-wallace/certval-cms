@@ -11,6 +11,7 @@ mod common;
 use std::process::Command;
 use std::sync::Arc;
 
+use certval::PathValidationStatus;
 use certval_cms::{
     certificates_only, rsa_pss, signer_identifier, CertificateOrigin, CmsEnvironment,
     CredentialOrigin, DigestAlgorithm, Error, IncludeCertificates, SignedDataBuilder, Signer,
@@ -324,6 +325,63 @@ fn a_digest_algorithm_the_signature_algorithm_does_not_use_is_refused() {
     assert!(matches!(
         env.verify_signed_data(&content_info(&sd), None, None, SignerPolicy::All),
         Err(Error::InvalidInput(_))
+    ));
+}
+
+/// A digest algorithm no registered implementation hashes is declined, as a signature algorithm
+/// none verifies is, and not reported as a certval failure.
+#[test]
+fn a_digest_algorithm_no_implementation_hashes_is_unrecognized() {
+    use const_oid::db::rfc5912::RSA_ENCRYPTION;
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let signatory = rsa_signatory(&ca, 31);
+    let mut sd = signed_data(&sign(&env, Signer::explicit(&signatory.credential())));
+    let mut infos: Vec<_> = sd.signer_infos.0.iter().cloned().collect();
+    // MD5, which nothing registered hashes, with rsaEncryption, which names no hash itself.
+    infos[0].digest_alg = spki::AlgorithmIdentifierOwned {
+        oid: const_oid::ObjectIdentifier::new_unwrap("1.2.840.113549.2.5"),
+        parameters: None,
+    };
+    infos[0].signature_algorithm = spki::AlgorithmIdentifierOwned {
+        oid: RSA_ENCRYPTION,
+        parameters: Some(Any::null()),
+    };
+    sd.signer_infos = cms::signed_data::SignerInfos::try_from(infos).unwrap();
+    assert!(matches!(
+        env.verify_signed_data(&content_info(&sd), None, None, SignerPolicy::All),
+        Err(Error::Unrecognized)
+    ));
+}
+
+/// A signer named by identifier whose certificate a source holds, with a key usage that does not
+/// permit signing, is reported for the key usage, as vetting would report it.
+#[test]
+fn a_named_signing_credential_refused_for_key_usage_says_so() {
+    let ca = Ca::new("CN=test CA");
+    let mut env = environment(&ca, &[]);
+    let encipherment_only =
+        rsa_signatory_with(&ca, 32, vec![key_usage(KeyUsages::KeyEncipherment)]);
+    env.add_signing_credential_source(SingleSigningCredential::new(Arc::new(
+        encipherment_only.credential(),
+    )));
+    let sid = signer_identifier(&encipherment_only.cert).unwrap();
+    assert!(matches!(
+        SignedDataBuilder::new(MESSAGE)
+            .add_signer(Signer::by_identifier(sid))
+            .build(&env),
+        Err(Error::Certval(certval::Error::PathValidation(
+            PathValidationStatus::InvalidKeyUsage
+        )))
+    ));
+    // Found by email address, where several may answer, it is simply not among them.
+    assert!(matches!(
+        SignedDataBuilder::new(MESSAGE)
+            .add_signer(Signer::by_subject(
+                encipherment_only.cert.tbs_certificate().subject().clone()
+            ))
+            .build(&env),
+        Err(Error::NoMatchingSigner)
     ));
 }
 

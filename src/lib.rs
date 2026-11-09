@@ -17,9 +17,9 @@
 //! [`populate_software`](CmsEnvironment::populate_software), not a fixed default.
 //!
 //! Recipients are this crate's [`KeyTransRecipient`], [`KeyAgreeRecipient`] and [`KemRecipient`],
-//! whose key management goes through the environment. Any other
-//! [`RecipientInfoBuilder`](cms::builder::RecipientInfoBuilder) can be added too, such as the `cms`
-//! crate's, but it does its own cryptography and reaches no plug point.
+//! whose key management goes through the environment. A recipient whose key management lies
+//! elsewhere implements [`RecipientInfoBuilder`] and is added the same way; it reaches no plug
+//! point.
 //!
 //! ```
 //! use certval_cms::{
@@ -107,7 +107,7 @@ pub use environment_traits::{
 pub use error::{Error, Result};
 pub use recipient::{
     ecc_cms_shared_info, kem_other_info, recipient_identifier, KemRecipient, KeyAgreeRecipient,
-    KeyTransRecipient,
+    KeyTransRecipient, RecipientInfoBuilder,
 };
 pub use signed::{
     default_signature_algorithm, rsa_pss, signer_identifier, signer_matches, BuiltSignedData,

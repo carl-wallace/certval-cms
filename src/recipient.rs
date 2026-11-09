@@ -8,12 +8,11 @@
 //! operation, so that a secret derived along the way, such as an ECDH shared secret or a
 //! key-encryption key, stays inside the implementation that derived it.
 
-use alloc::{format, vec, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 use core::marker::PhantomData;
 
 use certval::CertificationPathSettings;
 use cms::{
-    builder::{RecipientInfoBuilder, RecipientInfoType},
     cert::IssuerAndSerialNumber,
     content_info::CmsVersion,
     enveloped_data::{
@@ -36,7 +35,7 @@ use crate::algorithms::{
     KdfAlgorithm, KeyAgreementAlgorithm, KeyTransportAlgorithm, KeyWrapAlgorithm,
 };
 use crate::environment::CmsEnvironment;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::vetting::{KeyUse, Vetting};
 
 /// The `ECC-CMS-SharedInfo` type, from RFC 5753, section 7.2.
@@ -114,12 +113,40 @@ fn subject_public_key_info(cert: &Certificate) -> SubjectPublicKeyInfoOwned {
     cert.tbs_certificate().subject_public_key_info().clone()
 }
 
-/// A recipient builder's error, carried through `cms`'s builder error type.
-fn builder_error(e: Error) -> cms::builder::Error {
-    match e {
-        Error::Asn1(e) => cms::builder::Error::Asn1(e),
-        Error::Builder(e) => e,
-        e => cms::builder::Error::Builder(format!("{e}")),
+/// One recipient's key management: builds the RecipientInfo carrying a content-encryption key to
+/// that recipient. This crate's [`KeyTransRecipient`], [`KeyAgreeRecipient`] and [`KemRecipient`]
+/// implement it with their cryptography going through a [`CmsEnvironment`]; a recipient whose key
+/// management lies elsewhere implements it too, and the builders take either.
+pub trait RecipientInfoBuilder {
+    /// The random number generator the builder is given.
+    type Rng: CryptoRng + ?Sized;
+
+    /// The RecipientInfo carrying `content_encryption_key` to this recipient.
+    fn build_with_rng(
+        &mut self,
+        content_encryption_key: &[u8],
+        rng: &mut Self::Rng,
+    ) -> Result<RecipientInfo>;
+}
+
+impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for Box<dyn RecipientInfoBuilder<Rng = R> + '_> {
+    type Rng = R;
+
+    fn build_with_rng(
+        &mut self,
+        content_encryption_key: &[u8],
+        rng: &mut R,
+    ) -> Result<RecipientInfo> {
+        (**self).build_with_rng(content_encryption_key, rng)
+    }
+}
+
+/// RFC 5652, section 6.2.1: a KeyTransRecipientInfo is version 0 with an issuer and serial
+/// number and 2 with a subject key identifier.
+fn key_trans_version(rid: &RecipientIdentifier) -> CmsVersion {
+    match rid {
+        RecipientIdentifier::IssuerAndSerialNumber(_) => CmsVersion::V0,
+        RecipientIdentifier::SubjectKeyIdentifier(_) => CmsVersion::V2,
     }
 }
 
@@ -179,31 +206,18 @@ impl<'e, R: ?Sized> KeyTransRecipient<'e, R> {
 impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for KeyTransRecipient<'_, R> {
     type Rng = R;
 
-    fn recipient_info_type(&self) -> RecipientInfoType {
-        RecipientInfoType::Ktri
-    }
-
-    /// RFC 5652, section 6.2.1: 0 for an issuer and serial number, 2 for a subject key identifier.
-    fn recipient_info_version(&self) -> CmsVersion {
-        match self.rid {
-            RecipientIdentifier::IssuerAndSerialNumber(_) => CmsVersion::V0,
-            RecipientIdentifier::SubjectKeyIdentifier(_) => CmsVersion::V2,
-        }
-    }
-
     fn build_with_rng(
         &mut self,
         content_encryption_key: &[u8],
         _rng: &mut R,
-    ) -> core::result::Result<RecipientInfo, cms::builder::Error> {
-        let enc_key = self
-            .env
-            .encrypt_key_transport(self.alg, &self.spki, content_encryption_key)
-            .map_err(builder_error)?;
+    ) -> Result<RecipientInfo> {
+        let enc_key =
+            self.env
+                .encrypt_key_transport(self.alg, &self.spki, content_encryption_key)?;
         Ok(RecipientInfo::Ktri(KeyTransRecipientInfo {
-            version: self.recipient_info_version(),
+            version: key_trans_version(&self.rid),
             rid: self.rid.clone(),
-            key_enc_alg: self.alg.algorithm_identifier().map_err(builder_error)?,
+            key_enc_alg: self.alg.algorithm_identifier()?,
             enc_key: OctetString::new(enc_key)?,
         }))
     }
@@ -288,30 +302,18 @@ impl<'e, R: ?Sized> KeyAgreeRecipient<'e, R> {
 impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for KeyAgreeRecipient<'_, R> {
     type Rng = R;
 
-    fn recipient_info_type(&self) -> RecipientInfoType {
-        RecipientInfoType::Kari
-    }
-
-    /// RFC 5652, section 6.2.2: always 3.
-    fn recipient_info_version(&self) -> CmsVersion {
-        CmsVersion::V3
-    }
-
     fn build_with_rng(
         &mut self,
         content_encryption_key: &[u8],
         _rng: &mut R,
-    ) -> core::result::Result<RecipientInfo, cms::builder::Error> {
-        let output = self
-            .env
-            .encrypt_key_agreement(
-                self.alg,
-                self.wrap,
-                &self.spki,
-                self.ukm.as_deref(),
-                content_encryption_key,
-            )
-            .map_err(builder_error)?;
+    ) -> Result<RecipientInfo> {
+        let output = self.env.encrypt_key_agreement(
+            self.alg,
+            self.wrap,
+            &self.spki,
+            self.ukm.as_deref(),
+            content_encryption_key,
+        )?;
         let ukm = match &self.ukm {
             Some(ukm) => Some(UserKeyingMaterial::new(ukm.clone())?),
             None => None,
@@ -404,30 +406,18 @@ impl<'e, R: ?Sized> KemRecipient<'e, R> {
 impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for KemRecipient<'_, R> {
     type Rng = R;
 
-    fn recipient_info_type(&self) -> RecipientInfoType {
-        RecipientInfoType::Ori
-    }
-
-    /// RFC 5652, section 6.1 counts an OtherRecipientInfo as version 3 for the enclosing message.
-    fn recipient_info_version(&self) -> CmsVersion {
-        CmsVersion::V3
-    }
-
     fn build_with_rng(
         &mut self,
         content_encryption_key: &[u8],
         _rng: &mut R,
-    ) -> core::result::Result<RecipientInfo, cms::builder::Error> {
-        let output = self
-            .env
-            .encrypt_kem(
-                self.kdf,
-                self.wrap,
-                &self.spki,
-                self.ukm.as_deref(),
-                content_encryption_key,
-            )
-            .map_err(builder_error)?;
+    ) -> Result<RecipientInfo> {
+        let output = self.env.encrypt_kem(
+            self.kdf,
+            self.wrap,
+            &self.spki,
+            self.ukm.as_deref(),
+            content_encryption_key,
+        )?;
         let ukm = match &self.ukm {
             Some(ukm) => Some(UserKeyingMaterial::new(ukm.clone())?),
             None => None,
