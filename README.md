@@ -117,9 +117,10 @@ ECDH with the SHA-1 X9.63 KDF, OpenSSL's default for `cms -encrypt`, is not supp
 
 ## SignedData
 
-`SignedDataBuilder` signs with one or more signers, each with its own credential, digest and
-signature algorithm; the signature algorithm defaults from the key, or from what the credential
-prefers. Every signer's signed attributes contain content-type and message-digest, an ESSCertIDv2 of
+`SignedDataBuilder` signs with one or more signers, each with its own credential and signature
+algorithm, which defaults from the key, or from what the credential prefers; the digest algorithm
+is the one the signature algorithm uses, or SHA-256 for ML-DSA, which uses none, unless set. Every
+signer's signed attributes contain content-type and message-digest, an ESSCertIDv2 of
 its certificate in a signing-certificate-v2 attribute (RFC 5035) unless `without_ess_cert_id` is
 set, a signing time when one is given, and any others the caller adds. The content is encapsulated,
 or left out of the message with `detached`, or hashed elsewhere and given to `from_digest`. Hashing

@@ -23,9 +23,10 @@ use const_oid::{
             ID_SIGNED_DATA, ID_SIGNING_TIME,
         },
         rfc5912::{
-            ECDSA_WITH_SHA_256, ECDSA_WITH_SHA_384, ECDSA_WITH_SHA_512, ID_EC_PUBLIC_KEY,
-            ID_RSASSA_PSS, ID_SHA_256, ID_SHA_384, ID_SHA_512, RSA_ENCRYPTION,
-            SHA_256_WITH_RSA_ENCRYPTION, SHA_384_WITH_RSA_ENCRYPTION, SHA_512_WITH_RSA_ENCRYPTION,
+            ECDSA_WITH_SHA_224, ECDSA_WITH_SHA_256, ECDSA_WITH_SHA_384, ECDSA_WITH_SHA_512,
+            ID_EC_PUBLIC_KEY, ID_RSASSA_PSS, ID_SHA_224, ID_SHA_256, ID_SHA_384, ID_SHA_512,
+            RSA_ENCRYPTION, SHA_224_WITH_RSA_ENCRYPTION, SHA_256_WITH_RSA_ENCRYPTION,
+            SHA_384_WITH_RSA_ENCRYPTION, SHA_512_WITH_RSA_ENCRYPTION,
         },
     },
     ObjectIdentifier,
@@ -144,6 +145,50 @@ pub fn rsa_pss(digest: DigestAlgorithm) -> Result<AlgorithmIdentifierOwned> {
     })
 }
 
+/// The digest algorithm `signature_algorithm` uses: the hash a sha*WithRSAEncryption or
+/// ecdsa-with-SHA* identifier names, or RSASSA-PSS's hashAlgorithm parameter. `None` for an
+/// algorithm using none: ML-DSA, which hashes nothing itself, and rsaEncryption, which leaves the
+/// hash to the SignerInfo's digestAlgorithm (RFC 3370, section 3.2).
+pub(crate) fn signature_algorithm_digest(
+    signature_algorithm: &AlgorithmIdentifierOwned,
+) -> Result<Option<ObjectIdentifier>> {
+    let oid = match signature_algorithm.oid {
+        SHA_224_WITH_RSA_ENCRYPTION | ECDSA_WITH_SHA_224 => ID_SHA_224,
+        SHA_256_WITH_RSA_ENCRYPTION | ECDSA_WITH_SHA_256 => ID_SHA_256,
+        SHA_384_WITH_RSA_ENCRYPTION | ECDSA_WITH_SHA_384 => ID_SHA_384,
+        SHA_512_WITH_RSA_ENCRYPTION | ECDSA_WITH_SHA_512 => ID_SHA_512,
+        ID_RSASSA_PSS => {
+            let params = signature_algorithm.parameters.as_ref().ok_or_else(|| {
+                Error::InvalidInput(String::from("RSASSA-PSS without parameters"))
+            })?;
+            rsa::pkcs1::RsaPssParamsOwned::from_der(&params.to_der()?)?
+                .hash
+                .oid
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(oid))
+}
+
+/// The digest a signer uses with `signature_algorithm` (RFC 5754, section 3): the one the
+/// algorithm uses, which `chosen` must then be; otherwise `chosen`, or SHA-256 when neither says.
+pub(crate) fn signer_digest(
+    signature_algorithm: &AlgorithmIdentifierOwned,
+    chosen: Option<DigestAlgorithm>,
+) -> Result<DigestAlgorithm> {
+    let Some(used) = signature_algorithm_digest(signature_algorithm)? else {
+        return Ok(chosen.unwrap_or(DigestAlgorithm::Sha256));
+    };
+    if let Some(chosen) = chosen {
+        if chosen.oid() != used {
+            return Err(Error::InvalidInput(format!(
+                "a {chosen:?} digest with a signature algorithm using {used}"
+            )));
+        }
+    }
+    DigestAlgorithm::from_oid(used).ok_or(Error::Unrecognized)
+}
+
 /// A [`SigningCredential`] around any [`signature::Signer`] that knows its signature algorithm, e.g.
 /// one a hardware token or platform key store implements, so that it can sign SignedData unchanged.
 ///
@@ -223,31 +268,34 @@ pub struct CredentialSigner<'a, K: SigningKey + ?Sized = dyn SigningCredential +
 }
 
 impl<'a, K: SigningKey + ?Sized> CredentialSigner<'a, K> {
-    /// A signer for `key` with `digest` and the signature algorithm the key prefers, or else the
-    /// one [`default_signature_algorithm`] chooses for it.
+    /// A signer for `key` with `digest` and the signature algorithm the key prefers for it, or
+    /// else the one [`default_signature_algorithm`] chooses for it. A key preferring an algorithm
+    /// that uses another digest, as a [`SignerCredential`] with a fixed algorithm may, is
+    /// [`Error::InvalidInput`].
     pub fn new(env: &'a CmsEnvironment, key: &'a K, digest: DigestAlgorithm) -> Result<Self> {
         let signature_algorithm = match key.preferred_signature_algorithm(digest) {
             Some(alg) => alg,
             None => default_signature_algorithm_for_key(key.public_key(), digest)?,
         };
-        Ok(Self::with_algorithm(env, key, digest, signature_algorithm))
+        Self::with_algorithm(env, key, digest, signature_algorithm)
     }
 
     /// A signer for `key` with `signature_algorithm`, e.g. RSASSA-PSS from [`rsa_pss`]. `digest`
-    /// is the digest a key that signs only digests is given, and must be the one
-    /// `signature_algorithm` uses.
+    /// is the digest a key that signs only digests is given; one other than the digest
+    /// `signature_algorithm` uses is [`Error::InvalidInput`].
     pub fn with_algorithm(
         env: &'a CmsEnvironment,
         key: &'a K,
         digest: DigestAlgorithm,
         signature_algorithm: AlgorithmIdentifierOwned,
-    ) -> Self {
-        Self {
+    ) -> Result<Self> {
+        signer_digest(&signature_algorithm, Some(digest))?;
+        Ok(Self {
             env,
             key,
             signature_algorithm,
             digest,
-        }
+        })
     }
 
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>> {
@@ -378,7 +426,7 @@ enum SignerKey<'c> {
 /// attributes beyond the ones the builder adds.
 pub struct Signer<'c> {
     key: SignerKey<'c>,
-    digest: DigestAlgorithm,
+    digest: Option<DigestAlgorithm>,
     signature_algorithm: Option<AlgorithmIdentifierOwned>,
     signed_attributes: Vec<Attribute>,
     signing_time: Option<Time>,
@@ -389,7 +437,7 @@ impl<'c> Signer<'c> {
     fn with(key: SignerKey<'c>) -> Self {
         Self {
             key,
-            digest: DigestAlgorithm::Sha256,
+            digest: None,
             signature_algorithm: None,
             signed_attributes: vec![],
             signing_time: None,
@@ -422,13 +470,16 @@ impl<'c> Signer<'c> {
         Self::with(SignerKey::Subject(subject))
     }
 
-    /// The digest algorithm, SHA-256 unless set.
+    /// The digest algorithm, which must be the one the signature algorithm uses, when it uses
+    /// one (RFC 5754, section 3); unless set, that one, or SHA-256 for an algorithm hashing
+    /// nothing itself, such as ML-DSA.
     pub fn digest(mut self, digest: DigestAlgorithm) -> Self {
-        self.digest = digest;
+        self.digest = Some(digest);
         self
     }
 
-    /// The signature algorithm, [`default_signature_algorithm`] for the key unless set.
+    /// The signature algorithm, [`default_signature_algorithm`] for the key and the digest, or
+    /// the one the credential prefers, unless set.
     pub fn signature_algorithm(mut self, alg: AlgorithmIdentifierOwned) -> Self {
         self.signature_algorithm = Some(alg);
         self
@@ -587,14 +638,16 @@ impl<'c> SignedDataBuilder<'c> {
             let cert = credential.certificate();
             let sid = signer_identifier(cert)?;
             skid_signer |= matches!(sid, SignerIdentifier::SubjectKeyIdentifier(_));
+            let requested = signer.digest.unwrap_or(DigestAlgorithm::Sha256);
             let signature_algorithm = match &signer.signature_algorithm {
                 Some(alg) => alg.clone(),
-                None => match credential.preferred_signature_algorithm(signer.digest) {
+                None => match credential.preferred_signature_algorithm(requested) {
                     Some(alg) => alg,
-                    None => default_signature_algorithm(cert, signer.digest)?,
+                    None => default_signature_algorithm(cert, requested)?,
                 },
             };
-            let digest_alg = signer.digest.algorithm_identifier();
+            let digest_algorithm = signer_digest(&signature_algorithm, signer.digest)?;
+            let digest_alg = digest_algorithm.algorithm_identifier();
             if !digest_algorithms.contains(&digest_alg) {
                 digest_algorithms.push(digest_alg.clone());
             }
@@ -606,10 +659,9 @@ impl<'c> SignedDataBuilder<'c> {
                     pe.calculate_hash(pe, &digest_alg, content)?
                 }
                 Content::Digest(alg, digest) => {
-                    if alg != signer.digest {
+                    if alg != digest_algorithm {
                         return Err(Error::InvalidInput(format!(
-                            "a {:?} signer of content hashed with {alg:?}",
-                            signer.digest
+                            "a {digest_algorithm:?} signer of content hashed with {alg:?}"
                         )));
                     }
                     digest.to_vec()

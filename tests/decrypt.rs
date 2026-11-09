@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use certval_cms::{
     unpad_pkcs1v15, AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm,
-    CredentialOrigin, EnvelopedDataBuilder, Error, KdfAlgorithm, KemRecipient, KeyAgreeRecipient,
-    KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm, KeyWrapAlgorithm,
-    RecipientCredential, SingleRecipientCredential, SoftwareRecipientKey,
+    CredentialOrigin, EnvelopedDataBuilder, Error, GcmParameters, KdfAlgorithm, KemRecipient,
+    KeyAgreeRecipient, KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm,
+    KeyWrapAlgorithm, RecipientCredential, SingleRecipientCredential, SoftwareRecipientKey,
 };
 use cms::{
     builder::RecipientInfoBuilder, cert::x509::attr::Attribute, content_info::ContentInfo,
@@ -632,6 +632,40 @@ fn a_changed_authenticated_attribute_fails_decryption() {
     assert!(matches!(
         env.decrypt_enveloped_data(&changed, Some(&recipient.credential())),
         Err(Error::Crypto(_))
+    ));
+}
+
+/// RFC 5084, section 3.2: aes-ICVlen is 12 to 16. A message giving a shorter tag, and a mac
+/// truncated to match, is malformed, not a tag length this implementation declines.
+#[test]
+fn a_tag_shorter_than_rfc_5084_allows_is_refused() {
+    let env = software();
+    let recipient = rsa_recipient(17, true);
+    let ci = envelop(
+        &env,
+        ContentEncryptionAlgorithm::Aes256Gcm,
+        vec![key_trans(
+            &env,
+            &recipient,
+            KeyTransportAlgorithm::RsaOaepSha256,
+        )],
+    );
+    let mut aed =
+        cms::authenveloped_data::AuthEnvelopedData::from_der(&ci.content.to_der().unwrap())
+            .unwrap();
+    let alg = &mut aed.auth_encrypted_content_info.content_enc_alg;
+    let mut params =
+        GcmParameters::from_der(&alg.parameters.as_ref().unwrap().to_der().unwrap()).unwrap();
+    params.icv_len = 8;
+    alg.parameters = Some(Any::encode_from(&params).unwrap());
+    aed.mac = OctetString::new(&aed.mac.as_bytes()[..8]).unwrap();
+    let shortened = ContentInfo {
+        content_type: ci.content_type,
+        content: Any::encode_from(&aed).unwrap(),
+    };
+    assert!(matches!(
+        env.decrypt_enveloped_data(&shortened, Some(&recipient.credential())),
+        Err(Error::InvalidInput(_))
     ));
 }
 

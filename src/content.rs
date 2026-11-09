@@ -35,8 +35,12 @@ use crate::error::{Error, Result};
 /// Length in octets of the GCM nonce generated for a message, the length RFC 5084 recommends.
 const GCM_NONCE_LEN: usize = 12;
 
-/// Length in octets of the GCM authentication tag produced for a message.
+/// Length in octets of the GCM authentication tag produced for a message, and the longest RFC 5084
+/// allows a message.
 const GCM_TAG_LEN: usize = 16;
+
+/// Shortest GCM authentication tag RFC 5084, section 3.2, allows a message.
+const GCM_MIN_TAG_LEN: usize = 12;
 
 /// Length in octets of an AES-CBC IV.
 const CBC_IV_LEN: usize = 16;
@@ -177,7 +181,7 @@ pub enum ContentParameters {
 /// Checks and decodes the inputs to content decryption, for a [`DecryptContent`](crate::DecryptContent) implementation:
 /// the algorithm `alg` identifies, the key length it takes, associated data and a tag present
 /// exactly when it authenticates (the tag always then), and its parameters, with GCM's tag length
-/// the one `GCMParameters` gives.
+/// the one `GCMParameters` gives, within the 12 to 16 octets RFC 5084 allows.
 ///
 /// An algorithm this crate does not know is [`Error::Unrecognized`]; a key of the wrong length is
 /// the [`Error::Crypto`] a failed decryption is, so that the two cannot be told apart; malformed
@@ -219,6 +223,14 @@ pub fn content_decryption_parameters(
         }
         Some(tag) => {
             let params = GcmParameters::from_der(&params)?;
+            // The tag length is an unauthenticated field of the message, so a shorter tag than
+            // the RFC allows is refused here, before an implementation that would accept it.
+            if !(GCM_MIN_TAG_LEN..=GCM_TAG_LEN).contains(&usize::from(params.icv_len)) {
+                return Err(Error::InvalidInput(format!(
+                    "GCMParameters gives a {}-octet tag; RFC 5084 allows 12 to 16",
+                    params.icv_len
+                )));
+            }
             if usize::from(params.icv_len) != tag.len() {
                 return Err(Error::InvalidInput(format!(
                     "a {}-octet tag where GCMParameters gives {}",
