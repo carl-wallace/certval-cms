@@ -17,6 +17,8 @@ with ML-KEM and ML-DSA keys read in all three RFC 9935 and RFC 9881 forms.
 Decryption matches recipients by identifier rather than trying each one, and continues a failed
 RSAES-PKCS1-v1_5 key transport with a random content-encryption key (RFC 3218), so that malformed
 padding cannot be told apart from a wrong key and the recipient cannot serve as a padding oracle.
+An AuthEnvelopedData content type other than id-data is bound by a content-type authenticated
+attribute, which the builder adds and decryption requires (RFC 5083).
 SignedData objects may have any number of signers, with an ESSCertIDv2 binding each signer's certificate 
 unless omitted by configuration; and detached or pre-hashed content; `SignerCredential` adapts any `signature::Signer`, and
 `CredentialSigner` presents any `SigningKey` as one, for x509-cert's and x509-ocsp's builders.
@@ -25,4 +27,6 @@ with no certificate yet, such as `SoftwareKey`, implements it alone.
 Certificates are vetted when settings are given, signers' through the CA certificates a message
 contains when the `PkiEnvironment` lacks a path, and the outcome is reported (`Vetting`).
 `unwrap_content_info` processes nested messages. Features `rsa` and `pqc` turn on certval's software
-RSA and post-quantum verification, and `pqc` ML-DSA signing. MSRV 1.89.
+RSA and post-quantum verification, and `pqc` ML-DSA signing. The crate reuses `cms`'s ASN.1 types and
+defines its own `RecipientInfoBuilder`; it and its dependencies are `no_std` with `alloc`, given a
+`getrandom` backend. MSRV 1.89.

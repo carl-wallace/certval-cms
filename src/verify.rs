@@ -34,7 +34,7 @@ use der::{
 use spki::AlgorithmIdentifierOwned;
 use x509_cert::Certificate;
 
-use crate::environment::CmsEnvironment;
+use crate::environment::{hash, CmsEnvironment};
 use crate::environment_traits::SignerCertificateSource;
 use crate::error::{Error, Result};
 use crate::ess::SigningCertificateV2;
@@ -176,7 +176,7 @@ fn check_ess_cert_id(
     };
     let signing_certificate = SigningCertificateV2::from_der(&value.to_der()?)?;
     let id = signing_certificate.certs.first().ok_or_else(mismatch)?;
-    let hash = pe.calculate_hash(pe, &id.hash_algorithm(), &cert.to_der()?)?;
+    let hash = hash(pe, &id.hash_algorithm(), &cert.to_der()?)?;
     if hash != id.cert_hash.as_bytes()
         || id.issuer_serial.as_ref().is_some_and(|is| !is.names(cert))
     {
@@ -276,7 +276,7 @@ impl CmsEnvironment {
                 }
                 let digest =
                     OctetString::from_der(&single_value(attrs, ID_MESSAGE_DIGEST)?.to_der()?)?;
-                if pe.calculate_hash(pe, &signer.digest_alg, content)? != digest.as_bytes() {
+                if hash(pe, &signer.digest_alg, content)? != digest.as_bytes() {
                     return Err(Error::Crypto(String::from(
                         "the message digest does not match the content",
                     )));

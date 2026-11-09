@@ -81,7 +81,7 @@ jobs:
       - name: Run the tests
         env:
           CERTVAL_CMS_OPENSSL: openssl
-        run: cargo test -- --nocapture
+        run: cargo test --all-features -- --nocapture
 
   # Ubuntu 24.04's OpenSSL is 3.0, so the job above skips the openssl decryption of ML-KEM recipients
   # (OpenSSL 3.6) and of AuthEnvelopedData with authenticated attributes (OpenSSL 3.6.4, the first to
@@ -126,7 +126,7 @@ jobs:
         run: |
           set -o pipefail
           "$CERTVAL_CMS_OPENSSL" version
-          cargo test -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
+          cargo test --all-features -- --nocapture 2>&1 | tee "$RUNNER_TEMP/test.log"
           if grep -n '^skipped' "$RUNNER_TEMP/test.log"; then
             echo "an openssl check was skipped; this job exists to run them all"
             exit 1

@@ -17,7 +17,7 @@ use aes_gcm::{
 use cbc::cipher::{block_padding::Pkcs7, BlockCipherDecrypt, BlockModeDecrypt, KeyIvInit};
 use certval_cms::{
     AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm, ContentEncryptionOutput,
-    EnvelopedDataBuilder, Error, GcmParameters,
+    EnvelopedDataBuilder, Error, GcmParameters, RecipientInfoBuilder,
 };
 use cms::{
     authenveloped_data::AuthEnvelopedData,
@@ -75,9 +75,23 @@ fn rid() -> RecipientIdentifier {
     ))
 }
 
-fn recipient(key: &RsaPrivateKey) -> KeyTransRecipientInfoBuilder<Rng> {
-    KeyTransRecipientInfoBuilder::new(rid(), KeyEncryptionInfo::Rsa(RsaPublicKey::from(key)))
-        .unwrap()
+/// cms's own key transport recipient builder, standing in for a recipient whose key management
+/// lies outside the environment.
+struct FromCms(KeyTransRecipientInfoBuilder<Rng>);
+
+impl RecipientInfoBuilder for FromCms {
+    type Rng = Rng;
+    fn build_with_rng(&mut self, cek: &[u8], rng: &mut Rng) -> certval_cms::Result<RecipientInfo> {
+        cms::builder::RecipientInfoBuilder::build_with_rng(&mut self.0, cek, rng)
+            .map_err(|e| certval_cms::Error::Crypto(e.to_string()))
+    }
+}
+
+fn recipient(key: &RsaPrivateKey) -> FromCms {
+    FromCms(
+        KeyTransRecipientInfoBuilder::new(rid(), KeyEncryptionInfo::Rsa(RsaPublicKey::from(key)))
+            .unwrap(),
+    )
 }
 
 /// The content-encryption key, unwrapped from the message's only recipient.

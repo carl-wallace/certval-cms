@@ -73,7 +73,7 @@ fn spki(der: &[u8]) -> SubjectPublicKeyInfoOwned {
 /// Encrypts MESSAGE with AES-256-CBC to one recipient.
 fn envelop(
     env: &CmsEnvironment,
-    recipient: impl cms::builder::RecipientInfoBuilder<Rng = Rng>,
+    recipient: impl certval_cms::RecipientInfoBuilder<Rng = Rng>,
 ) -> ContentInfo {
     EnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes256Cbc)
         .unwrap()
@@ -436,7 +436,7 @@ fn a_recipient_whose_key_no_implementation_takes_fails_to_build() {
         .unwrap()
         .add_recipient(kari)
         .build(&env, &mut rng());
-    assert!(matches!(built, Err(Error::Builder(_))));
+    assert!(matches!(built, Err(Error::Unrecognized)));
 
     assert!(matches!(
         env.encrypt_kem(

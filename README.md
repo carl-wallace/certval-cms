@@ -70,11 +70,11 @@ transport recipient takes an `rsa` public key and does PKCS #1 v1.5 only, and it
 recipient is generic over RustCrypto curve, KDF and key wrap types. It has no AuthEnvelopedData or
 KEM recipient builder, and no decryption. Its one provider hook covers password recipients.
 
-This crate reuses `cms`'s ASN.1 types and its `RecipientInfoBuilder` trait unchanged. It replaces
-every cryptographic operation: content encryption, and the key transport, key agreement and KEM
-recipients, which implement `RecipientInfoBuilder` with their cryptography going through the
-environment. `cms`'s own recipient builders can still be added to a message, but they do their own
-cryptography and reach no plug point. Signing in `cms` is already pluggable through
+This crate reuses `cms`'s ASN.1 types unchanged and builds everything else itself: content
+encryption, and the key transport, key agreement and KEM recipients, which implement this crate's
+one-method `RecipientInfoBuilder` with their cryptography going through the environment. A
+recipient whose key management lies elsewhere implements the same trait and is added the same way,
+reaching no plug point. Signing in `cms` is already pluggable through
 `signature::Signer`, and `SignerCredential` adapts any such signer to this crate's signing.
 `CredentialSigner` goes the other way: it presents a `SigningKey` as a `signature::Signer`, with
 its public key as the verifying key, so that x509-cert's certificate, request and CRL builders and
@@ -195,6 +195,11 @@ CERTVAL_CMS_OPENSSL=openssl cargo test --all-features -- --nocapture
 
 Enveloping, decryption, signing, verification and vetting are in place. Composite ML-KEM
 (draft-ietf-lamps-pq-composite-kem and its CMS profile) is to follow.
+
+The crate and its dependencies are `no_std` with `alloc`. Its software implementations draw
+content-encryption keys, IVs and nonces from `getrandom`, which has a backend on every operating
+system Rust targets and none on a bare target or `wasm32-unknown-unknown`; building there means
+providing one, as getrandom's documentation on custom backends describes.
 
 ## License
 

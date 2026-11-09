@@ -11,7 +11,9 @@ use cms::{
     },
     kemri::{KemRecipientInfo, ID_ORI_KEM},
 };
-use const_oid::db::rfc5911::{ID_CT_AUTH_ENVELOPED_DATA, ID_ENVELOPED_DATA};
+use const_oid::db::rfc5911::{
+    ID_CONTENT_TYPE, ID_CT_AUTH_ENVELOPED_DATA, ID_DATA, ID_ENVELOPED_DATA,
+};
 use const_oid::ObjectIdentifier;
 use der::{Decode, Encode};
 use spki::SubjectPublicKeyInfoOwned;
@@ -112,24 +114,21 @@ fn supported<'m, T>(
     }
 }
 
-/// The recipient identifiers in one RecipientInfo, each with its operation. A KeyAgreeRecipientInfo
-/// can carry several; the others carry one. Password, KEK and other recipients carry no
-/// identifier a credential could match, and yield none.
-fn recipients(ri: &RecipientInfo) -> Result<Vec<(RecipientIdentifier, Operation<'_>)>> {
+/// The recipient identifiers in one RecipientInfo, each with its operation, or with the error in
+/// that recipient's own fields, which concerns only a credential that matches it. A
+/// KeyAgreeRecipientInfo can carry several; the others carry one. Password, KEK and other
+/// recipients carry no identifier a credential could match, and yield none. The error returned is
+/// a RecipientInfo whose identifiers cannot be read at all.
+fn recipients(ri: &RecipientInfo) -> Result<Vec<(RecipientIdentifier, Result<Operation<'_>>)>> {
     match ri {
         RecipientInfo::Ktri(ktri) => {
             let operation = supported(
                 KeyTransportAlgorithm::from_algorithm_identifier(&ktri.key_enc_alg),
                 |alg| Operation::KeyTransport(alg, ktri.enc_key.as_bytes()),
-            )?;
+            );
             Ok(vec![(ktri.rid.clone(), operation)])
         }
         RecipientInfo::Kari(kari) => {
-            let algs = match KeyAgreementAlgorithm::from_algorithm_identifier(&kari.key_enc_alg) {
-                Ok(algs) => Some(algs),
-                Err(Error::Unrecognized) => None,
-                Err(e) => return Err(e),
-            };
             // RFC 5753, section 3.1.1: the originator's ephemeral key. An originator identified by
             // certificate (static-static ECDH) is not processed.
             let originator = match &kari.originator {
@@ -144,16 +143,19 @@ fn recipients(ri: &RecipientInfo) -> Result<Vec<(RecipientIdentifier, Operation<
                 .recipient_enc_keys
                 .iter()
                 .map(|rek| {
-                    let operation = match (algs, &originator) {
-                        (Some((alg, wrap)), Some(originator)) => Operation::KeyAgreement {
-                            alg,
-                            wrap,
-                            originator: originator.clone(),
-                            ukm,
-                            encrypted_key: rek.enc_key.as_bytes(),
+                    let operation = supported(
+                        KeyAgreementAlgorithm::from_algorithm_identifier(&kari.key_enc_alg),
+                        |(alg, wrap)| match &originator {
+                            Some(originator) => Operation::KeyAgreement {
+                                alg,
+                                wrap,
+                                originator: originator.clone(),
+                                ukm,
+                                encrypted_key: rek.enc_key.as_bytes(),
+                            },
+                            None => Operation::Unsupported,
                         },
-                        _ => Operation::Unsupported,
-                    };
+                    );
                     (key_agree_rid(&rek.rid), operation)
                 })
                 .collect())
@@ -169,27 +171,49 @@ fn recipients(ri: &RecipientInfo) -> Result<Vec<(RecipientIdentifier, Operation<
                     KeyWrapAlgorithm::from_algorithm_identifier(&kemri.wrap)?,
                 ))
             });
-            // RFC 9629, section 3: kekLength is the length of the key-encryption key, which the
-            // wrap algorithm determines.
-            if let Ok((_, wrap)) = &algs {
-                if usize::from(kemri.kek_length) != wrap.kek_len() {
-                    return Err(Error::InvalidInput(String::from(
-                        "a KEMRecipientInfo whose kekLength does not match its wrap algorithm",
-                    )));
-                }
-            }
-            let operation = supported(algs, |(kdf, wrap)| Operation::Kem {
+            let mut operation = supported(algs, |(kdf, wrap)| Operation::Kem {
                 kdf,
                 wrap,
                 kem: kemri.kem.oid,
                 kem_ct: kemri.kem_ct.as_bytes().to_vec(),
                 ukm: kemri.ukm.as_ref().map(|ukm| ukm.as_bytes().to_vec()),
                 encrypted_key: kemri.encrypted_key.as_bytes().to_vec(),
-            })?;
+            });
+            // RFC 9629, section 3: kekLength is the length of the key-encryption key, which the
+            // wrap algorithm determines.
+            if let Ok(Operation::Kem { wrap, .. }) = &operation {
+                if usize::from(kemri.kek_length) != wrap.kek_len() {
+                    operation = Err(Error::InvalidInput(String::from(
+                        "a KEMRecipientInfo whose kekLength does not match its wrap algorithm",
+                    )));
+                }
+            }
             Ok(vec![(kemri.rid.clone(), operation)])
         }
         RecipientInfo::Kekri(_) | RecipientInfo::Pwri(_) => Ok(vec![]),
     }
+}
+
+/// The content type a content-type attribute among `attrs` gives, or `None` when there is none.
+/// More than one, or one with other than one value, is malformed.
+pub(crate) fn content_type_attribute(attrs: &AuthAttributes) -> Result<Option<ObjectIdentifier>> {
+    let mut found = attrs.iter().filter(|a| a.oid == ID_CONTENT_TYPE);
+    let attr = match (found.next(), found.next()) {
+        (None, _) => return Ok(None),
+        (Some(attr), None) => attr,
+        (Some(_), Some(_)) => {
+            return Err(Error::InvalidInput(String::from(
+                "more than one content-type authenticated attribute",
+            )))
+        }
+    };
+    let mut values = attr.values.iter();
+    let (Some(value), None) = (values.next(), values.next()) else {
+        return Err(Error::InvalidInput(String::from(
+            "a content-type authenticated attribute without exactly one value",
+        )));
+    };
+    Ok(Some(ObjectIdentifier::from_der(&value.to_der()?)?))
 }
 
 /// A random content-encryption key, the length `alg` takes.
@@ -233,11 +257,23 @@ impl CmsEnvironment {
         // Whether a credential was found for some recipient whose operation could not be
         // performed, which is reported rather than as no recipient matching.
         let mut unsupported = false;
+        // A RecipientInfo whose identifiers could not be read, reported when no other recipient
+        // is one a credential decrypts for, since it might have been.
+        let mut unreadable = None;
         for (index, ri) in recip_infos.0.iter().enumerate() {
-            for (rid, operation) in recipients(ri)? {
+            let recipients = match recipients(ri) {
+                Ok(recipients) => recipients,
+                Err(e) => {
+                    unreadable = Some(e);
+                    continue;
+                }
+            };
+            for (rid, operation) in recipients {
                 let Some(found) = self.find_credential(&rid, explicit)? else {
                     continue;
                 };
+                // This recipient is ours, so what is wrong with its fields is our error.
+                let operation = operation?;
                 let credential = found.credential();
                 let result = match &operation {
                     Operation::KeyTransport(alg, encrypted_key) => {
@@ -317,9 +353,11 @@ impl CmsEnvironment {
             }
         }
         if unsupported {
-            Err(Error::Unrecognized)
-        } else {
-            Err(Error::NoMatchingRecipient)
+            return Err(Error::Unrecognized);
+        }
+        match unreadable {
+            Some(e) => Err(e),
+            None => Err(Error::NoMatchingRecipient),
         }
     }
 
@@ -378,6 +416,31 @@ impl CmsEnvironment {
         let ciphertext = eci.encrypted_content.as_ref().ok_or_else(|| {
             Error::InvalidInput(String::from("detached content is not supported"))
         })?;
+        // RFC 5083, section 2.1: the content type is outside what the tag covers, so a type other
+        // than id-data must be bound by a content-type authenticated attribute, which must give
+        // the type the message carries.
+        let bound_type = match &auth_attrs {
+            Some(attrs) => content_type_attribute(attrs)?,
+            None => None,
+        };
+        match bound_type {
+            Some(bound) => {
+                if bound != eci.content_type {
+                    return Err(Error::InvalidInput(alloc::format!(
+                        "a content-type attribute of {bound} for {} content",
+                        eci.content_type
+                    )));
+                }
+            }
+            None => {
+                if tag.is_some() && eci.content_type != ID_DATA {
+                    return Err(Error::InvalidInput(alloc::format!(
+                        "{} content without a content-type authenticated attribute",
+                        eci.content_type
+                    )));
+                }
+            }
+        }
         // RFC 5083, section 2.1: the authenticated attributes are authenticated as their DER
         // encoding with an EXPLICIT SET OF tag.
         let aad = match &auth_attrs {

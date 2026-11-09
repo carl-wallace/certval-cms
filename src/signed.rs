@@ -44,7 +44,7 @@ use spki::{
 use x509_cert::{attr::Attribute, name::Name, time::Time, Certificate};
 
 use crate::credential::CredentialOrigin;
-use crate::environment::CmsEnvironment;
+use crate::environment::{hash, CmsEnvironment};
 use crate::environment_traits::{
     SharedSigningCredential, SigningCredential, SigningCredentialLookup, SigningCredentialSource,
     SigningKey,
@@ -53,6 +53,7 @@ use crate::error::{Error, Result};
 use crate::ess::{EssCertIdV2, IssuerSerial, SigningCertificateV2};
 use crate::recipient::recipient_identifier;
 use crate::vetting::{key_usage_permits, KeyUse};
+use certval::PathValidationStatus;
 
 /// A digest algorithm for a signer (RFC 5754).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -303,7 +304,7 @@ impl<'a, K: SigningKey + ?Sized> CredentialSigner<'a, K> {
         match self.key.sign_message(self.env, alg, message) {
             Err(Error::Unrecognized) => {
                 let pe = self.env.pki_environment().ok_or(Error::NoPkiEnvironment)?;
-                let digest = pe.calculate_hash(pe, &self.digest.algorithm_identifier(), message)?;
+                let digest = hash(pe, &self.digest.algorithm_identifier(), message)?;
                 self.key.sign_digest(self.env, alg, &digest)
             }
             result => result,
@@ -656,7 +657,7 @@ impl<'c> SignedDataBuilder<'c> {
             // attributes are present, and they always are here.
             let message_digest = match self.content {
                 Content::Encapsulated(content) | Content::Detached(content) => {
-                    pe.calculate_hash(pe, &digest_alg, content)?
+                    hash(pe, &digest_alg, content)?
                 }
                 Content::Digest(alg, digest) => {
                     if alg != digest_algorithm {
@@ -678,7 +679,7 @@ impl<'c> SignedDataBuilder<'c> {
                 // RFC 5035, section 3: an ESSCertIDv2 of the signer's certificate, its hash SHA-256,
                 // the default, which is therefore not encoded.
                 let sha256 = DigestAlgorithm::Sha256.algorithm_identifier();
-                let cert_hash = pe.calculate_hash(pe, &sha256, &cert.to_der()?)?;
+                let cert_hash = hash(pe, &sha256, &cert.to_der()?)?;
                 let signing_certificate = SigningCertificateV2 {
                     certs: vec![EssCertIdV2 {
                         hash_algorithm: None,
@@ -701,7 +702,7 @@ impl<'c> SignedDataBuilder<'c> {
             let signature = match credential.sign_message(env, &signature_algorithm, &to_be_signed)
             {
                 Err(Error::Unrecognized) => {
-                    let digest = pe.calculate_hash(pe, &digest_alg, &to_be_signed)?;
+                    let digest = hash(pe, &digest_alg, &to_be_signed)?;
                     credential.sign_digest(env, &signature_algorithm, &digest)?
                 }
                 result => result?,
@@ -789,23 +790,34 @@ impl Held<'_> {
 }
 
 /// An attribute with one value.
-fn attribute(oid: ObjectIdentifier, value: &impl Encode) -> Result<Attribute> {
+pub(crate) fn attribute(oid: ObjectIdentifier, value: &impl Encode) -> Result<Attribute> {
     let mut values = SetOfVec::new();
     values.insert(Any::from_der(&value.to_der()?)?)?;
     Ok(Attribute { oid, values })
 }
 
-/// The first credential the environment's sources find for `lookup`, held for the builder.
+/// The first credential the environment's sources find for `lookup`, held for the builder. A
+/// lookup by identifier names one certificate; when a source holds it but its key usage does not
+/// permit signing, that is reported, as vetting reports it, rather than as no credential.
 fn found<'c>(
     env: &CmsEnvironment,
     lookup: SigningCredentialLookup<'_>,
 ) -> Result<(Held<'c>, CredentialOrigin)> {
-    let (credential, index) = env
-        .find_signing_credentials(lookup)?
-        .into_iter()
-        .next()
-        .ok_or(Error::NoMatchingSigner)?;
-    Ok((Held::Shared(credential), CredentialOrigin::Source(index)))
+    let by_identifier = matches!(lookup, SigningCredentialLookup::Identifier(_));
+    let (permitted, refused) = env.signing_credentials(lookup)?;
+    match permitted.into_iter().next() {
+        Some((credential, index)) => {
+            Ok((Held::Shared(credential), CredentialOrigin::Source(index)))
+        }
+        None => {
+            if by_identifier && refused {
+                return Err(Error::Certval(certval::Error::PathValidation(
+                    PathValidationStatus::InvalidKeyUsage,
+                )));
+            }
+            Err(Error::NoMatchingSigner)
+        }
+    }
 }
 
 impl CmsEnvironment {
@@ -817,17 +829,27 @@ impl CmsEnvironment {
         &self,
         lookup: SigningCredentialLookup<'_>,
     ) -> Result<Vec<(SharedSigningCredential, usize)>> {
+        Ok(self.signing_credentials(lookup)?.0)
+    }
+
+    /// [`find_signing_credentials`](Self::find_signing_credentials), and whether any credential
+    /// the sources returned was left out for its key usage.
+    pub(crate) fn signing_credentials(
+        &self,
+        lookup: SigningCredentialLookup<'_>,
+    ) -> Result<(Vec<(SharedSigningCredential, usize)>, bool)> {
         let mut found = vec![];
+        let mut refused = false;
         for (index, source) in self.signing_credential_sources.iter().enumerate() {
             for credential in source.find_signing_credentials(self, lookup)? {
                 match key_usage_permits(credential.certificate(), KeyUse::Signing) {
                     Ok(true) => found.push((credential, index)),
-                    Ok(false) => {}
+                    Ok(false) => refused = true,
                     Err(e) => debug!("passing over a signing credential: {e}"),
                 }
             }
         }
-        Ok(found)
+        Ok((found, refused))
     }
 
     /// Registers a source of signing credentials after those already registered.

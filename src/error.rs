@@ -20,8 +20,6 @@ pub enum Error {
     Crypto(String),
     /// Encoding or decoding failed.
     Asn1(der::Error),
-    /// A recipient builder failed.
-    Builder(cms::builder::Error),
     /// No recipient of a message is one an available credential decrypts for.
     NoMatchingRecipient,
     /// No credential is available for a signer, or no certificate for a SignerInfo's signer.
@@ -40,7 +38,6 @@ impl fmt::Display for Error {
             Error::InvalidInput(e) => write!(f, "invalid input: {e}"),
             Error::Crypto(e) => write!(f, "cryptographic operation failed: {e}"),
             Error::Asn1(e) => write!(f, "ASN.1 error: {e}"),
-            Error::Builder(e) => write!(f, "recipient builder error: {e}"),
             Error::NoMatchingSigner => {
                 f.write_str("no credential or certificate is available for a signer")
             }
@@ -60,11 +57,5 @@ impl core::error::Error for Error {}
 impl From<der::Error> for Error {
     fn from(e: der::Error) -> Self {
         Error::Asn1(e)
-    }
-}
-
-impl From<cms::builder::Error> for Error {
-    fn from(e: cms::builder::Error) -> Self {
-        Error::Builder(e)
     }
 }

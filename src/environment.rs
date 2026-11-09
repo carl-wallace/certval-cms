@@ -22,6 +22,19 @@ use crate::environment_traits::{
 };
 use crate::error::{Error, Result};
 
+/// `data` hashed with `alg` through `pe`. No registered implementation hashing the algorithm is
+/// [`Error::Unrecognized`], as it is for a signature no implementation verifies.
+pub(crate) fn hash(
+    pe: &PkiEnvironment,
+    alg: &AlgorithmIdentifierOwned,
+    data: &[u8],
+) -> Result<Vec<u8>> {
+    pe.calculate_hash(pe, alg, data).map_err(|e| match e {
+        certval::Error::Unrecognized => Error::Unrecognized,
+        e => Error::Certval(e),
+    })
+}
+
 use crate::software::{
     encrypt_kem_rust_crypto, encrypt_key_agreement_rust_crypto, encrypt_key_transport_rust_crypto,
 };

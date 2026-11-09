@@ -29,10 +29,9 @@ pqc = ["dep:ml-dsa", "certval/pqc"]
 # PkiEnvironment holds. `revocation` adds that local check without std or networking.
 certval = { version = "0.2.0-rc.2", default-features = false, features = ["revocation"] }
 
-# The ASN.1 types, and the RecipientInfoBuilder trait and recipient builders (`builder`), reused
-# unchanged. Content encryption is the one part not reused: it is implemented here so that it can be
-# routed to a provider.
-cms = { version = "0.3.0-rc.0", features = ["builder"] }
+# The ASN.1 types, reused unchanged. The builders are this crate's, so that every cryptographic
+# operation can be routed to a provider, and so that nothing needs `std`.
+cms = "0.3.0-rc.0"
 const-oid = { version = "0.10.2", features = ["db"] }
 der = { version = "0.8.1", features = ["alloc", "derive", "oid"] }
 spki = "0.8.0"
@@ -66,7 +65,9 @@ rand_core = "0.10.1"
 log = "0.4.35"
 
 [dev-dependencies]
-# The tests decrypt what is built, with RustCrypto and with the openssl command.
+# The tests decrypt what is built, with RustCrypto and with the openssl command. cms's own key
+# transport recipient builder stands in for a recipient whose key management lies elsewhere.
+cms = { version = "0.3.0-rc.0", features = ["builder"] }
 ml-kem = { version = "0.3.3", features = ["pkcs8", "pem"] }
 p256 = { version = "0.14.0", features = ["ecdh", "ecdsa", "pem"] }
 p384 = { version = "0.14.0", features = ["ecdh", "pem"] }
