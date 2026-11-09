@@ -38,7 +38,7 @@ use crate::environment::CmsEnvironment;
 use crate::environment_traits::SignerCertificateSource;
 use crate::error::{Error, Result};
 use crate::ess::SigningCertificateV2;
-use crate::signed::signer_matches;
+use crate::signed::{signature_algorithm_digest, signer_matches};
 use crate::vetting::{KeyUse, Vetting};
 
 /// Where a signer's certificate came from.
@@ -249,6 +249,19 @@ impl CmsEnvironment {
         let (certificate, certificate_origin) =
             self.find_signer_certificate(&signer.sid, message_certs)?;
 
+        // RFC 5754, section 3: the digest algorithm is the one the signature algorithm uses, when
+        // it uses one. The verifiers this crate interoperates with hash the signed attributes with
+        // digestAlgorithm, so a pair that disagrees is refused rather than verified either way.
+        let signature_alg = signature_algorithm(signer);
+        if let Some(used) = signature_algorithm_digest(&signature_alg)? {
+            if used != signer.digest_alg.oid {
+                return Err(Error::InvalidInput(format!(
+                    "a {} digestAlgorithm with a {} signatureAlgorithm",
+                    signer.digest_alg.oid, signer.signature_algorithm.oid
+                )));
+            }
+        }
+
         // RFC 5652, section 5.4: with signed attributes, the signature covers their DER encoding
         // with an EXPLICIT SET OF tag, and they carry the content's type and digest; without them,
         // it covers the content itself, which must then be id-data.
@@ -285,7 +298,7 @@ impl CmsEnvironment {
             pe,
             &to_be_verified,
             &BitString::from_bytes(signer.signature.as_bytes())?,
-            &signature_algorithm(signer),
+            &signature_alg,
             certificate.tbs_certificate().subject_public_key_info(),
         )
         .map_err(|e| match e {

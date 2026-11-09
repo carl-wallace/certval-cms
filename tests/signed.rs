@@ -18,7 +18,9 @@ use certval_cms::{
     SoftwareSigningKey, Vetting,
 };
 use cms::{content_info::ContentInfo, signed_data::SignedData, signed_data::SignerIdentifier};
-use common::{day, email_address, environment, key_usage, rng, settings, Ca};
+use common::{
+    ca_extensions, day, email_address, environment, issue_by, key_usage, rng, settings, Ca,
+};
 use const_oid::db::rfc5911::{ID_DATA, ID_ENVELOPED_DATA};
 use der::{asn1::OctetString, Any, Decode, Encode};
 use elliptic_curve::Generate as _;
@@ -121,7 +123,37 @@ fn rsa_pkcs1v15_and_pss_with_each_digest() {
                 .signature_algorithm(rsa_pss(digest).unwrap()),
         );
         assert_verifies_vetted(&env, &ci, &format!("PSS {digest:?}"));
+
+        // The signature algorithm alone chooses the digest.
+        let ci = sign(
+            &env,
+            Signer::explicit(&credential).signature_algorithm(rsa_pss(digest).unwrap()),
+        );
+        assert_verifies_vetted(&env, &ci, &format!("PSS {digest:?} by signature algorithm"));
+        assert_eq!(signer_digest_algorithms(&ci), vec![digest.oid()]);
     }
+
+    // A digest other than the one the signature algorithm uses is refused.
+    assert!(matches!(
+        SignedDataBuilder::new(MESSAGE)
+            .add_signer(
+                Signer::explicit(&credential)
+                    .digest(DigestAlgorithm::Sha256)
+                    .signature_algorithm(rsa_pss(DigestAlgorithm::Sha384).unwrap())
+            )
+            .build(&env),
+        Err(Error::InvalidInput(_))
+    ));
+}
+
+/// Each signer's digestAlgorithm, in SignerInfo order.
+fn signer_digest_algorithms(ci: &ContentInfo) -> Vec<const_oid::ObjectIdentifier> {
+    signed_data(ci)
+        .signer_infos
+        .0
+        .iter()
+        .map(|si| si.digest_alg.oid)
+        .collect()
 }
 
 macro_rules! ecdsa_round_trips {
@@ -278,6 +310,23 @@ fn a_changed_signature_fails_verification() {
     ));
 }
 
+/// RFC 5754, section 3: a SignerInfo whose digestAlgorithm is not the hash its signatureAlgorithm
+/// uses is malformed, whichever hash the signature would verify under.
+#[test]
+fn a_digest_algorithm_the_signature_algorithm_does_not_use_is_refused() {
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let signatory = ec_signatory!(p256, ca, 29);
+    let mut sd = signed_data(&sign(&env, Signer::explicit(&signatory.credential())));
+    let mut infos: Vec<_> = sd.signer_infos.0.iter().cloned().collect();
+    infos[0].digest_alg = DigestAlgorithm::Sha384.algorithm_identifier();
+    sd.signer_infos = cms::signed_data::SignerInfos::try_from(infos).unwrap();
+    assert!(matches!(
+        env.verify_signed_data(&content_info(&sd), None, None, SignerPolicy::All),
+        Err(Error::InvalidInput(_))
+    ));
+}
+
 #[test]
 fn a_content_type_attribute_that_does_not_match_is_refused() {
     let ca = Ca::new("CN=test CA");
@@ -381,6 +430,58 @@ fn an_intermediate_only_the_message_carries_is_used_and_reported() {
         .is_err());
 }
 
+/// The message's CA certificates are followed by issuer name. Many bearing the signer's issuer's
+/// name but not its key are each examined once and passed over, and the intermediate among them
+/// is found; without it, the message fails as it would with no CA certificates at all.
+#[test]
+fn ca_certificates_bearing_the_issuers_name_without_its_key_are_passed_over() {
+    use std::str::FromStr;
+    let root = Ca::new("CN=root CA");
+    let intermediate = root.intermediate("CN=intermediate CA");
+    let signatory = rsa_signatory(&intermediate, 30);
+    let credential = signatory.credential();
+    let env = environment(&root, &[]);
+    let name = Name::from_str("CN=intermediate CA").unwrap();
+    let lookalikes: Vec<Certificate> = (0..12u8)
+        .map(|serial| {
+            let key = p256::ecdsa::SigningKey::from(p256::SecretKey::generate_from_rng(&mut rng()));
+            let spki = key.verifying_key().to_public_key_der().unwrap();
+            issue_by::<_, p256::ecdsa::DerSignature>(
+                &key,
+                &name,
+                "CN=intermediate CA",
+                spki.as_bytes(),
+                100 + serial,
+                ca_extensions(),
+            )
+        })
+        .collect();
+
+    let mut builder = SignedDataBuilder::new(MESSAGE);
+    builder.add_signer(Signer::explicit(&credential));
+    for cert in &lookalikes {
+        builder.add_certificate(cert.clone());
+    }
+    let without = builder.build(&env).unwrap().content_info;
+    builder.add_certificate(intermediate.cert.clone());
+    let with = builder.build(&env).unwrap().content_info;
+
+    let started = std::time::Instant::now();
+    let verified = env
+        .verify_signed_data(&with, None, Some(&settings()), SignerPolicy::All)
+        .unwrap();
+    assert!(matches!(verified.signers[0].vetting, Vetting::Validated(_)));
+    assert_eq!(
+        verified.signers[0].message_ca_certificates,
+        vec![intermediate.cert.clone()]
+    );
+    assert!(matches!(
+        env.verify_signed_data(&without, None, Some(&settings()), SignerPolicy::All),
+        Err(Error::Certval(_))
+    ));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
+
 // ---- OpenSSL
 
 fn openssl() -> Option<String> {
@@ -466,6 +567,33 @@ fn openssl_and_this_crate_verify_each_others_messages() {
         assert!(
             output.status.success(),
             "{name}, this crate's message: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, MESSAGE);
+    }
+
+    // A signature::Signer fixed at ecdsa-with-SHA384, with the signer's digest left to follow it;
+    // OpenSSL hashes the signed attributes with digestAlgorithm, so the two must agree.
+    {
+        use certval_cms::SignerCredential;
+        use p384::pkcs8::DecodePrivateKey;
+        let signer = p384::ecdsa::SigningKey::from_pkcs8_der(&ec.pkcs8).unwrap();
+        let credential =
+            SignerCredential::<_, p384::ecdsa::DerSignature>::new(ec.cert.clone(), signer);
+        let signed = sign(&env, Signer::explicit(&credential));
+        let signed_path = dir.path().join("signed.der");
+        std::fs::write(&signed_path, signed.to_der().unwrap()).unwrap();
+        let output = Command::new(&openssl)
+            .args(["cms", "-verify", "-binary", "-inform", "DER", "-in"])
+            .arg(&signed_path)
+            .arg("-CAfile")
+            .arg(&ca_path)
+            .args(["-purpose", "any"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "SignerCredential, this crate's message: {}",
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(output.stdout, MESSAGE);
@@ -654,10 +782,12 @@ fn a_signature_signer_signs_with_its_own_algorithm() {
     let rsa_credential =
         SignerCredential::<_, rsa::pkcs1v15::Signature>::new(rsa.cert.clone(), rsa_signer);
 
-    let ec = ec_signatory!(p256, ca, 24);
-    let ec_signer = p256::ecdsa::SigningKey::from_pkcs8_der(&ec.pkcs8).unwrap();
+    // The ECDSA signer's algorithm is fixed at ecdsa-with-SHA384; the signer's digest follows it
+    // without being set.
+    let ec = ec_signatory!(p384, ca, 24);
+    let ec_signer = p384::ecdsa::SigningKey::from_pkcs8_der(&ec.pkcs8).unwrap();
     let ec_credential =
-        SignerCredential::<_, p256::ecdsa::DerSignature>::new(ec.cert.clone(), ec_signer);
+        SignerCredential::<_, p384::ecdsa::DerSignature>::new(ec.cert.clone(), ec_signer);
 
     let built = SignedDataBuilder::new(MESSAGE)
         .add_signer(Signer::explicit(&rsa_credential).digest(DigestAlgorithm::Sha384))
@@ -672,7 +802,11 @@ fn a_signature_signer_signs_with_its_own_algorithm() {
         .map(|si| si.signature_algorithm.oid)
         .collect();
     assert!(algs.contains(&const_oid::db::rfc5912::SHA_384_WITH_RSA_ENCRYPTION));
-    assert!(algs.contains(&const_oid::db::rfc5912::ECDSA_WITH_SHA_256));
+    assert!(algs.contains(&const_oid::db::rfc5912::ECDSA_WITH_SHA_384));
+    assert_eq!(
+        signer_digest_algorithms(&built.content_info),
+        vec![DigestAlgorithm::Sha384.oid(); 2]
+    );
     let verified = env
         .verify_signed_data(
             &built.content_info,
@@ -693,6 +827,22 @@ fn a_signature_signer_signs_with_its_own_algorithm() {
             .build(&env),
         Err(Error::Unrecognized)
     ));
+
+    // A digest set to one the fixed algorithm does not use is refused, in SignedData and in a
+    // CredentialSigner.
+    assert!(matches!(
+        SignedDataBuilder::new(MESSAGE)
+            .add_signer(Signer::explicit(&ec_credential).digest(DigestAlgorithm::Sha256))
+            .build(&env),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        certval_cms::CredentialSigner::new(&env, &ec_credential, DigestAlgorithm::Sha256),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(
+        certval_cms::CredentialSigner::new(&env, &ec_credential, DigestAlgorithm::Sha384).is_ok()
+    );
 }
 
 // ---- nested content
