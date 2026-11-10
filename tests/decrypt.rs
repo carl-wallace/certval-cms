@@ -281,6 +281,9 @@ macro_rules! key_agreement_round_trips {
             KeyAgreementAlgorithm::EcdhSha256,
             KeyAgreementAlgorithm::EcdhSha384,
             KeyAgreementAlgorithm::EcdhSha512,
+            KeyAgreementAlgorithm::EcdhCofactorSha256,
+            KeyAgreementAlgorithm::EcdhCofactorSha384,
+            KeyAgreementAlgorithm::EcdhCofactorSha512,
         ] {
             for wrap in WRAPS {
                 for ukm in UKMS {
