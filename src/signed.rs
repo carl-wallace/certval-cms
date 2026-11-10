@@ -8,7 +8,7 @@
 use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 
 use cms::{
-    cert::CertificateChoices,
+    cert::{CertificateChoices, IssuerAndSerialNumber},
     content_info::{CmsVersion, ContentInfo},
     signed_data::{
         CertificateSet, EncapsulatedContentInfo, SignedAttributes, SignedData, SignerIdentifier,
@@ -490,6 +490,7 @@ pub struct Signer<'c> {
     signed_attributes: Vec<Attribute>,
     signing_time: Option<Time>,
     ess_cert_id: bool,
+    issuer_and_serial: bool,
 }
 
 impl<'c> Signer<'c> {
@@ -501,6 +502,7 @@ impl<'c> Signer<'c> {
             signed_attributes: vec![],
             signing_time: None,
             ess_cert_id: true,
+            issuer_and_serial: false,
         }
     }
 
@@ -555,6 +557,15 @@ impl<'c> Signer<'c> {
     /// attribute (RFC 5035), which is otherwise added to bind the certificate into the signature.
     pub fn without_ess_cert_id(mut self) -> Self {
         self.ess_cert_id = false;
+        self
+    }
+
+    /// Identifies the signer by its certificate's issuer and serial number even when the
+    /// certificate has a subject key identifier, for a verifier that matches signers that way
+    /// only. Otherwise the subject key identifier is used when the certificate has one (see
+    /// [`signer_identifier`]).
+    pub fn identified_by_issuer_and_serial(mut self) -> Self {
+        self.issuer_and_serial = true;
         self
     }
 
@@ -712,7 +723,14 @@ impl<'c> SignedDataBuilder<'c> {
             };
             let credential = held.credential();
             let cert = credential.certificate();
-            let sid = signer_identifier(cert)?;
+            let sid = if signer.issuer_and_serial {
+                SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+                    issuer: cert.tbs_certificate().issuer().clone(),
+                    serial_number: cert.tbs_certificate().serial_number().clone(),
+                })
+            } else {
+                signer_identifier(cert)?
+            };
             skid_signer |= matches!(sid, SignerIdentifier::SubjectKeyIdentifier(_));
             let requested = signer.digest.unwrap_or(DigestAlgorithm::Sha256);
             let signature_algorithm = match &signer.signature_algorithm {
