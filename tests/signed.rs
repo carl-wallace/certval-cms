@@ -269,6 +269,34 @@ fn a_signer_certificate_the_message_omits_is_found_through_a_source() {
     );
 }
 
+#[test]
+fn a_signer_identified_by_issuer_and_serial_is_so_despite_a_subject_key_identifier() {
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let signatory = rsa_signatory(&ca, 35);
+    let credential = signatory.credential();
+    let by_default = signed_data(&sign(&env, Signer::explicit(&credential)));
+    assert!(matches!(
+        by_default.signer_infos.0.iter().next().unwrap().sid,
+        SignerIdentifier::SubjectKeyIdentifier(_)
+    ));
+    let ci = sign(
+        &env,
+        Signer::explicit(&credential).identified_by_issuer_and_serial(),
+    );
+    match &signed_data(&ci).signer_infos.0.iter().next().unwrap().sid {
+        SignerIdentifier::IssuerAndSerialNumber(iasn) => {
+            assert_eq!(&iasn.issuer, signatory.cert.tbs_certificate().issuer());
+            assert_eq!(
+                &iasn.serial_number,
+                signatory.cert.tbs_certificate().serial_number()
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_verifies_vetted(&env, &ci, "issuer and serial");
+}
+
 // ---- failures
 
 fn signed_data(ci: &ContentInfo) -> SignedData {
