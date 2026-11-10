@@ -5,6 +5,9 @@ use alloc::{format, string::String};
 use const_oid::{
     db::{
         rfc5753::{
+            DH_SINGLE_PASS_COFACTOR_DH_SHA_256_KDF_SCHEME,
+            DH_SINGLE_PASS_COFACTOR_DH_SHA_384_KDF_SCHEME,
+            DH_SINGLE_PASS_COFACTOR_DH_SHA_512_KDF_SCHEME,
             DH_SINGLE_PASS_STD_DH_SHA_256_KDF_SCHEME, DH_SINGLE_PASS_STD_DH_SHA_384_KDF_SCHEME,
             DH_SINGLE_PASS_STD_DH_SHA_512_KDF_SCHEME,
         },
@@ -213,6 +216,10 @@ impl KeyTransportAlgorithm {
 
 /// An ephemeral-static ECDH key agreement scheme with the ANSI X9.63 KDF (RFC 5753, section 7.1.4),
 /// for a KeyAgreeRecipientInfo.
+///
+/// The cofactor schemes differ from the standard ones only by multiplying the shared point by the
+/// curve's cofactor, which is 1 for P-256, P-384 and P-521, so on those curves each derives the same
+/// key-encryption key as the standard scheme with the same hash.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum KeyAgreementAlgorithm {
@@ -222,6 +229,12 @@ pub enum KeyAgreementAlgorithm {
     EcdhSha384,
     /// dhSinglePass-stdDH-sha512kdf-scheme
     EcdhSha512,
+    /// dhSinglePass-cofactorDH-sha256kdf-scheme
+    EcdhCofactorSha256,
+    /// dhSinglePass-cofactorDH-sha384kdf-scheme
+    EcdhCofactorSha384,
+    /// dhSinglePass-cofactorDH-sha512kdf-scheme
+    EcdhCofactorSha512,
 }
 
 impl KeyAgreementAlgorithm {
@@ -231,6 +244,15 @@ impl KeyAgreementAlgorithm {
             KeyAgreementAlgorithm::EcdhSha256 => DH_SINGLE_PASS_STD_DH_SHA_256_KDF_SCHEME,
             KeyAgreementAlgorithm::EcdhSha384 => DH_SINGLE_PASS_STD_DH_SHA_384_KDF_SCHEME,
             KeyAgreementAlgorithm::EcdhSha512 => DH_SINGLE_PASS_STD_DH_SHA_512_KDF_SCHEME,
+            KeyAgreementAlgorithm::EcdhCofactorSha256 => {
+                DH_SINGLE_PASS_COFACTOR_DH_SHA_256_KDF_SCHEME
+            }
+            KeyAgreementAlgorithm::EcdhCofactorSha384 => {
+                DH_SINGLE_PASS_COFACTOR_DH_SHA_384_KDF_SCHEME
+            }
+            KeyAgreementAlgorithm::EcdhCofactorSha512 => {
+                DH_SINGLE_PASS_COFACTOR_DH_SHA_512_KDF_SCHEME
+            }
         }
     }
 
@@ -244,6 +266,9 @@ impl KeyAgreementAlgorithm {
             KeyAgreementAlgorithm::EcdhSha256,
             KeyAgreementAlgorithm::EcdhSha384,
             KeyAgreementAlgorithm::EcdhSha512,
+            KeyAgreementAlgorithm::EcdhCofactorSha256,
+            KeyAgreementAlgorithm::EcdhCofactorSha384,
+            KeyAgreementAlgorithm::EcdhCofactorSha512,
         ]
         .into_iter()
         .find(|a| a.oid() == alg.oid)

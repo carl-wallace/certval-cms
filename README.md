@@ -88,7 +88,7 @@ root.
 | Recipient | Type | Algorithms |
 |---|---|---|
 | Key transport (KeyTransRecipientInfo) | `KeyTransRecipient` | RSAES-PKCS1-v1_5; RSAES-OAEP with SHA-1, -256, -384 or -512 |
-| Key agreement (KeyAgreeRecipientInfo) | `KeyAgreeRecipient` | ephemeral-static ECDH on P-256, P-384 or P-521, X9.63 KDF with SHA-256, -384 or -512 (RFC 5753), AES-128/192/256 key wrap |
+| Key agreement (KeyAgreeRecipientInfo) | `KeyAgreeRecipient` | ephemeral-static ECDH (standard or cofactor) on P-256, P-384 or P-521, X9.63 KDF with SHA-256, -384 or -512 (RFC 5753), AES-128/192/256 key wrap |
 | KEM (KEMRecipientInfo, RFC 9629) | `KemRecipient` | ML-KEM-512, -768 or -1024, HKDF with SHA-256, -384 or -512 (RFC 8619), AES-128/192/256 key wrap |
 
 | Content encryption | Message | Parameters |

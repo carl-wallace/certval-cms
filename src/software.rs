@@ -173,13 +173,13 @@ fn x963_kek(
     let shared_info = ecc_cms_shared_info(wrap, ukm)?;
     let mut kek = Zeroizing::new(vec![0u8; wrap.kek_len()]);
     match alg {
-        KeyAgreementAlgorithm::EcdhSha256 => {
+        KeyAgreementAlgorithm::EcdhSha256 | KeyAgreementAlgorithm::EcdhCofactorSha256 => {
             ansi_x963_kdf::derive_key_into::<Sha256>(secret, &shared_info, &mut kek)
         }
-        KeyAgreementAlgorithm::EcdhSha384 => {
+        KeyAgreementAlgorithm::EcdhSha384 | KeyAgreementAlgorithm::EcdhCofactorSha384 => {
             ansi_x963_kdf::derive_key_into::<Sha384>(secret, &shared_info, &mut kek)
         }
-        KeyAgreementAlgorithm::EcdhSha512 => {
+        KeyAgreementAlgorithm::EcdhSha512 | KeyAgreementAlgorithm::EcdhCofactorSha512 => {
             ansi_x963_kdf::derive_key_into::<Sha512>(secret, &shared_info, &mut kek)
         }
     }

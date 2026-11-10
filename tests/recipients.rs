@@ -27,6 +27,7 @@ use cms::{
     kemri::{CmsOriForKemOtherInfo, KemRecipientInfo, ID_ORI_KEM},
 };
 use const_oid::db::rfc5753::{
+    DH_SINGLE_PASS_COFACTOR_DH_SHA_256_KDF_SCHEME, DH_SINGLE_PASS_COFACTOR_DH_SHA_384_KDF_SCHEME,
     DH_SINGLE_PASS_STD_DH_SHA_256_KDF_SCHEME, DH_SINGLE_PASS_STD_DH_SHA_384_KDF_SCHEME,
 };
 use der::{
@@ -199,10 +200,13 @@ fn key_transport_round_trips() {
 
 // ---- key agreement
 
-const KEY_AGREEMENTS: [KeyAgreementAlgorithm; 3] = [
+const KEY_AGREEMENTS: [KeyAgreementAlgorithm; 6] = [
     KeyAgreementAlgorithm::EcdhSha256,
     KeyAgreementAlgorithm::EcdhSha384,
     KeyAgreementAlgorithm::EcdhSha512,
+    KeyAgreementAlgorithm::EcdhCofactorSha256,
+    KeyAgreementAlgorithm::EcdhCofactorSha384,
+    KeyAgreementAlgorithm::EcdhCofactorSha512,
 ];
 
 const UKMS: [Option<&[u8]>; 2] = [None, Some(b"user keying material")];
@@ -244,10 +248,12 @@ fn kari_cek(kari: &cms::enveloped_data::KeyAgreeRecipientInfo, secret: &[u8]) ->
     .unwrap();
     let mut kek = vec![0u8; kek_len];
     match kari.key_enc_alg.oid {
-        DH_SINGLE_PASS_STD_DH_SHA_256_KDF_SCHEME => {
+        DH_SINGLE_PASS_STD_DH_SHA_256_KDF_SCHEME
+        | DH_SINGLE_PASS_COFACTOR_DH_SHA_256_KDF_SCHEME => {
             ansi_x963_kdf::derive_key_into::<Sha256>(secret, &shared_info, &mut kek)
         }
-        DH_SINGLE_PASS_STD_DH_SHA_384_KDF_SCHEME => {
+        DH_SINGLE_PASS_STD_DH_SHA_384_KDF_SCHEME
+        | DH_SINGLE_PASS_COFACTOR_DH_SHA_384_KDF_SCHEME => {
             ansi_x963_kdf::derive_key_into::<Sha384>(secret, &shared_info, &mut kek)
         }
         _ => ansi_x963_kdf::derive_key_into::<Sha512>(secret, &shared_info, &mut kek),
