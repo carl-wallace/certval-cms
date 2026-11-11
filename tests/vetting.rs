@@ -36,7 +36,7 @@ fn rsa_recipient(
     extensions: Vec<Extension>,
     validity: Validity,
 ) -> RsaRecipient {
-    let key = rsa::RsaPrivateKey::new(&mut rng(), 2048).unwrap();
+    let key = rsa::PrivateKey::new(&mut rng(), 2048).unwrap();
     let spki = key.to_public_key().to_public_key_der().unwrap();
     RsaRecipient {
         cert: ca.issue(spki.as_bytes(), serial, extensions, validity),

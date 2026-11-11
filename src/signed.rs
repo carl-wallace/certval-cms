@@ -17,8 +17,11 @@ use cms::{
 };
 use const_oid::{
     db::{
+        fips202::{ID_SHAKE_128, ID_SHAKE_256},
         fips204::{ID_ML_DSA_44, ID_ML_DSA_65, ID_ML_DSA_87},
         fips205::{
+            ID_SLH_DSA_SHAKE_128_F, ID_SLH_DSA_SHAKE_128_S, ID_SLH_DSA_SHAKE_192_F,
+            ID_SLH_DSA_SHAKE_192_S, ID_SLH_DSA_SHAKE_256_F, ID_SLH_DSA_SHAKE_256_S,
             ID_SLH_DSA_SHA_2_128_F, ID_SLH_DSA_SHA_2_128_S, ID_SLH_DSA_SHA_2_192_F,
             ID_SLH_DSA_SHA_2_192_S, ID_SLH_DSA_SHA_2_256_F, ID_SLH_DSA_SHA_2_256_S,
         },
@@ -69,6 +72,12 @@ pub enum DigestAlgorithm {
     Sha384,
     /// SHA-512
     Sha512,
+    /// SHAKE128 with a 256-bit output (RFC 8702), the digest RFC 9814 pairs with SLH-DSA's
+    /// SHAKE-128 parameter sets. Computing it needs certval's `pqc` feature.
+    Shake128,
+    /// SHAKE256 with a 512-bit output (RFC 8702), the digest RFC 9814 pairs with SLH-DSA's
+    /// SHAKE-192 and SHAKE-256 parameter sets. Computing it needs certval's `pqc` feature.
+    Shake256,
 }
 
 impl DigestAlgorithm {
@@ -78,6 +87,8 @@ impl DigestAlgorithm {
             DigestAlgorithm::Sha256 => 256,
             DigestAlgorithm::Sha384 => 384,
             DigestAlgorithm::Sha512 => 512,
+            DigestAlgorithm::Shake128 => 256,
+            DigestAlgorithm::Shake256 => 512,
         }
     }
 
@@ -87,6 +98,8 @@ impl DigestAlgorithm {
             DigestAlgorithm::Sha256 => ID_SHA_256,
             DigestAlgorithm::Sha384 => ID_SHA_384,
             DigestAlgorithm::Sha512 => ID_SHA_512,
+            DigestAlgorithm::Shake128 => ID_SHAKE_128,
+            DigestAlgorithm::Shake256 => ID_SHAKE_256,
         }
     }
 
@@ -104,6 +117,8 @@ impl DigestAlgorithm {
             DigestAlgorithm::Sha256,
             DigestAlgorithm::Sha384,
             DigestAlgorithm::Sha512,
+            DigestAlgorithm::Shake128,
+            DigestAlgorithm::Shake256,
         ]
         .into_iter()
         .find(|d| d.oid() == oid)
@@ -126,7 +141,7 @@ pub(crate) fn default_signature_algorithm_for_key(
     digest: DigestAlgorithm,
 ) -> Result<AlgorithmIdentifierOwned> {
     let key_alg = spki.algorithm.oid;
-    if slh_dsa_digest_bits(key_alg).is_some() {
+    if slh_dsa_digest(key_alg).is_some() {
         return Ok(AlgorithmIdentifierOwned {
             oid: key_alg,
             parameters: None,
@@ -158,6 +173,8 @@ pub fn rsa_pss(digest: DigestAlgorithm) -> Result<AlgorithmIdentifierOwned> {
         DigestAlgorithm::Sha256 => RsaPssParams::new::<sha2::Sha256>(32).to_der()?,
         DigestAlgorithm::Sha384 => RsaPssParams::new::<sha2::Sha384>(48).to_der()?,
         DigestAlgorithm::Sha512 => RsaPssParams::new::<sha2::Sha512>(64).to_der()?,
+        // RFC 8702's RSASSA-PSS with SHAKE uses identifiers of its own, which are not offered.
+        DigestAlgorithm::Shake128 | DigestAlgorithm::Shake256 => return Err(Error::Unrecognized),
     };
     Ok(AlgorithmIdentifierOwned {
         oid: ID_RSASSA_PSS,
@@ -198,14 +215,10 @@ pub(crate) fn signer_digest(
     chosen: Option<DigestAlgorithm>,
 ) -> Result<DigestAlgorithm> {
     let Some(used) = signature_algorithm_digest(signature_algorithm)? else {
-        if let Some(bits) = slh_dsa_digest_bits(signature_algorithm.oid) {
+        if let Some((bits, paired)) = slh_dsa_digest(signature_algorithm.oid) {
             // RFC 9814, section 4: with signed attributes, a digest at least twice the size of the
             // hash in the SLH-DSA tree, by default the one its table pairs with the parameter set.
-            let digest = chosen.unwrap_or(if bits == 256 {
-                DigestAlgorithm::Sha256
-            } else {
-                DigestAlgorithm::Sha512
-            });
+            let digest = chosen.unwrap_or(paired);
             if digest.bits() < bits {
                 return Err(Error::InvalidInput(format!(
                     "a {digest:?} digest with an SLH-DSA parameter set needing {bits} bits"
@@ -229,15 +242,17 @@ pub(crate) fn signer_digest(
     DigestAlgorithm::from_oid(used).ok_or(Error::Unrecognized)
 }
 
-/// The smallest digest, in bits, RFC 9814 (section 4) allows with signed attributes for the SHA2
-/// SLH-DSA parameter set `oid`, twice the size of the hash in its tree; `None` for any other
-/// algorithm. The SHAKE parameter sets pair with SHAKE digests, which are not among the
-/// [`DigestAlgorithm`]s.
-pub(crate) fn slh_dsa_digest_bits(oid: ObjectIdentifier) -> Option<usize> {
+/// For the SLH-DSA parameter set `oid`, the smallest digest in bits RFC 9814 (section 4) allows with
+/// signed attributes, twice the size of the hash in its tree, and the digest its table pairs with
+/// the set; `None` for any other algorithm.
+pub(crate) fn slh_dsa_digest(oid: ObjectIdentifier) -> Option<(usize, DigestAlgorithm)> {
     match oid {
-        ID_SLH_DSA_SHA_2_128_S | ID_SLH_DSA_SHA_2_128_F => Some(256),
-        ID_SLH_DSA_SHA_2_192_S | ID_SLH_DSA_SHA_2_192_F => Some(384),
-        ID_SLH_DSA_SHA_2_256_S | ID_SLH_DSA_SHA_2_256_F => Some(512),
+        ID_SLH_DSA_SHA_2_128_S | ID_SLH_DSA_SHA_2_128_F => Some((256, DigestAlgorithm::Sha256)),
+        ID_SLH_DSA_SHA_2_192_S | ID_SLH_DSA_SHA_2_192_F => Some((384, DigestAlgorithm::Sha512)),
+        ID_SLH_DSA_SHA_2_256_S | ID_SLH_DSA_SHA_2_256_F => Some((512, DigestAlgorithm::Sha512)),
+        ID_SLH_DSA_SHAKE_128_S | ID_SLH_DSA_SHAKE_128_F => Some((256, DigestAlgorithm::Shake128)),
+        ID_SLH_DSA_SHAKE_192_S | ID_SLH_DSA_SHAKE_192_F => Some((384, DigestAlgorithm::Shake256)),
+        ID_SLH_DSA_SHAKE_256_S | ID_SLH_DSA_SHAKE_256_F => Some((512, DigestAlgorithm::Shake256)),
         _ => None,
     }
 }
@@ -581,7 +596,8 @@ impl<'c> Signer<'c> {
     /// The digest algorithm, which must be the one the signature algorithm uses, when it uses
     /// one (RFC 5754, section 3); unless set, that one, or for an algorithm hashing nothing itself,
     /// SHA-512 for ML-DSA (RFC 9881), the digest RFC 9814 pairs with an SLH-DSA parameter set
-    /// (SHA-256 for the 128-bit sets, SHA-512 otherwise), and SHA-256 otherwise. For SLH-DSA, a
+    /// (SHA-256 or SHA-512 for the SHA2 sets, SHAKE128 or SHAKE256 for the SHAKE sets), and SHA-256
+    /// otherwise. For SLH-DSA, a
     /// digest shorter than RFC 9814 allows is refused.
     pub fn digest(mut self, digest: DigestAlgorithm) -> Self {
         self.digest = Some(digest);

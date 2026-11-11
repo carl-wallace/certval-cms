@@ -35,7 +35,7 @@ use der::{
 };
 use getrandom::SysRng;
 use rand_core::UnwrapErr;
-use rsa::{pkcs1v15::Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey};
+use rsa::{pkcs1v15::Pkcs1v15Encrypt, PrivateKey as RsaPrivateKey, PublicKey as RsaPublicKey};
 use x509_cert::ext::pkix::SubjectKeyIdentifier;
 
 type Rng = UnwrapErr<SysRng>;

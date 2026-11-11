@@ -60,7 +60,7 @@ fn rsa_signatory(ca: &Ca, serial: u8) -> Signatory {
 }
 
 fn rsa_signatory_with(ca: &Ca, serial: u8, extensions: Vec<Extension>) -> Signatory {
-    let key = rsa::RsaPrivateKey::new(&mut rng(), 2048).unwrap();
+    let key = rsa::PrivateKey::new(&mut rng(), 2048).unwrap();
     let spki = key.to_public_key().to_public_key_der().unwrap();
     Signatory {
         cert: ca.issue(spki.as_bytes(), serial, extensions, day()),
@@ -1053,7 +1053,7 @@ fn a_signature_signer_signs_with_its_own_algorithm() {
 
     let rsa = rsa_signatory(&ca, 23);
     let rsa_signer = rsa::pkcs1v15::SigningKey::<sha2::Sha384>::new(
-        rsa::RsaPrivateKey::from_pkcs8_der(&rsa.pkcs8).unwrap(),
+        rsa::PrivateKey::from_pkcs8_der(&rsa.pkcs8).unwrap(),
     );
     let rsa_credential =
         SignerCredential::<_, rsa::pkcs1v15::Signature>::new(rsa.cert.clone(), rsa_signer);
@@ -1133,7 +1133,7 @@ fn signed_and_enveloped_layers_are_unwrapped_in_either_order() {
     let env = environment(&ca, &[]);
     let signatory = rsa_signatory(&ca, 25);
     let signing_key = signatory.credential();
-    let key = rsa::RsaPrivateKey::new(&mut rng(), 2048).unwrap();
+    let key = rsa::PrivateKey::new(&mut rng(), 2048).unwrap();
     let recipient_cert = ca.issue(
         key.to_public_key().to_public_key_der().unwrap().as_bytes(),
         26,
@@ -1352,12 +1352,12 @@ fn slh_dsa_signatory<P: slh_dsa::ParameterSet>(ca: &Ca, serial: u8) -> Signatory
     }
 }
 
-/// RFC 9814: each SHA2 SLH-DSA parameter set signs with the digest its table pairs it with by
-/// default, and a digest shorter than twice the size of its tree's hash is refused. The fast
-/// parameter sets stand for the small ones, which differ only in speed and signature size.
+/// RFC 9814: each SLH-DSA parameter set signs with the digest its table pairs it with by default,
+/// and a digest shorter than twice the size of its tree's hash is refused. The fast parameter sets
+/// stand for the small ones, which differ only in speed and signature size.
 #[cfg(feature = "pqc")]
 #[test]
-fn slh_dsa_with_each_sha2_size() {
+fn slh_dsa_with_each_size() {
     let ca = Ca::new("CN=test CA");
     let env = environment(&ca, &[]);
     let cases = [
@@ -1374,6 +1374,21 @@ fn slh_dsa_with_each_sha2_size() {
         (
             slh_dsa_signatory::<slh_dsa::Sha2_256f>(&ca, 38),
             DigestAlgorithm::Sha512,
+            Some(DigestAlgorithm::Sha384),
+        ),
+        (
+            slh_dsa_signatory::<slh_dsa::Shake128f>(&ca, 40),
+            DigestAlgorithm::Shake128,
+            None,
+        ),
+        (
+            slh_dsa_signatory::<slh_dsa::Shake192f>(&ca, 41),
+            DigestAlgorithm::Shake256,
+            Some(DigestAlgorithm::Shake128),
+        ),
+        (
+            slh_dsa_signatory::<slh_dsa::Shake256f>(&ca, 42),
+            DigestAlgorithm::Shake256,
             Some(DigestAlgorithm::Sha384),
         ),
     ];
@@ -1400,10 +1415,18 @@ fn slh_dsa_with_each_sha2_size() {
     }
 }
 
-/// An SLH-DSA key OpenSSL generated signs here, and OpenSSL verifies the message.
+/// An SLH-DSA key OpenSSL generated signs here, with a SHA2 and a SHAKE parameter set, and OpenSSL
+/// verifies the message.
 #[cfg(feature = "pqc")]
 #[test]
 fn an_openssl_slh_dsa_key_signs_and_openssl_verifies() {
+    for (algorithm, serial) in [("SLH-DSA-SHA2-128f", 39), ("SLH-DSA-SHAKE-128f", 43)] {
+        openssl_slh_dsa_key_signs_and_openssl_verifies(algorithm, serial);
+    }
+}
+
+#[cfg(feature = "pqc")]
+fn openssl_slh_dsa_key_signs_and_openssl_verifies(algorithm: &str, serial: u8) {
     let Some(openssl) = openssl() else { return };
     let dir = tempfile::tempdir().unwrap();
     let key_path = dir.path().join("key.der");
@@ -1411,7 +1434,7 @@ fn an_openssl_slh_dsa_key_signs_and_openssl_verifies() {
         .args([
             "genpkey",
             "-algorithm",
-            "SLH-DSA-SHA2-128f",
+            algorithm,
             "-outform",
             "DER",
             "-out",
@@ -1420,7 +1443,7 @@ fn an_openssl_slh_dsa_key_signs_and_openssl_verifies() {
         .status()
         .unwrap();
     if !status.success() {
-        eprintln!("skipped: {openssl} has no SLH-DSA");
+        eprintln!("skipped: {openssl} has no {algorithm}");
         return;
     }
     let output = Command::new(&openssl)
@@ -1434,7 +1457,7 @@ fn an_openssl_slh_dsa_key_signs_and_openssl_verifies() {
     let env = environment(&ca, &[]);
     let cert = ca.issue(
         &output.stdout,
-        39,
+        serial,
         vec![key_usage(KeyUsages::DigitalSignature)],
         day(),
     );
@@ -1455,7 +1478,7 @@ fn an_openssl_slh_dsa_key_signs_and_openssl_verifies() {
         .unwrap();
     assert!(
         output.status.success(),
-        "{}",
+        "{algorithm}: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stdout, MESSAGE);

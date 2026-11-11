@@ -142,7 +142,7 @@ impl Recipient {
 }
 
 fn rsa_recipient(serial: u8, skid: bool) -> Recipient {
-    let key = rsa::RsaPrivateKey::new(&mut rng(), 2048).unwrap();
+    let key = rsa::PrivateKey::new(&mut rng(), 2048).unwrap();
     let spki = key.to_public_key().to_public_key_der().unwrap();
     Recipient {
         cert: certificate(spki.as_bytes(), "CN=rsa recipient", serial, skid),
