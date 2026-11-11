@@ -18,6 +18,10 @@ use cms::{
 use const_oid::{
     db::{
         fips204::{ID_ML_DSA_44, ID_ML_DSA_65, ID_ML_DSA_87},
+        fips205::{
+            ID_SLH_DSA_SHA_2_128_F, ID_SLH_DSA_SHA_2_128_S, ID_SLH_DSA_SHA_2_192_F,
+            ID_SLH_DSA_SHA_2_192_S, ID_SLH_DSA_SHA_2_256_F, ID_SLH_DSA_SHA_2_256_S,
+        },
         rfc5911::{
             ID_AA_SIGNING_CERTIFICATE_V_2, ID_CONTENT_TYPE, ID_DATA, ID_MESSAGE_DIGEST,
             ID_SIGNED_DATA, ID_SIGNING_TIME,
@@ -68,6 +72,15 @@ pub enum DigestAlgorithm {
 }
 
 impl DigestAlgorithm {
+    /// The size of the algorithm's output in bits.
+    pub fn bits(self) -> usize {
+        match self {
+            DigestAlgorithm::Sha256 => 256,
+            DigestAlgorithm::Sha384 => 384,
+            DigestAlgorithm::Sha512 => 512,
+        }
+    }
+
     /// The algorithm's object identifier.
     pub fn oid(self) -> ObjectIdentifier {
         match self {
@@ -98,8 +111,8 @@ impl DigestAlgorithm {
 }
 
 /// The signature algorithm a signer uses by default with `cert`'s key and `digest`: PKCS #1 v1.5
-/// for an RSA key, ECDSA for an EC key, and pure ML-DSA for an ML-DSA key, which hashes nothing
-/// itself. RSASSA-PSS is chosen by passing [`rsa_pss`] to the signer instead.
+/// for an RSA key, ECDSA for an EC key, and pure ML-DSA or SLH-DSA for an ML-DSA or SLH-DSA key,
+/// which hash nothing themselves. RSASSA-PSS is chosen by passing [`rsa_pss`] to the signer instead.
 pub fn default_signature_algorithm(
     cert: &Certificate,
     digest: DigestAlgorithm,
@@ -113,6 +126,12 @@ pub(crate) fn default_signature_algorithm_for_key(
     digest: DigestAlgorithm,
 ) -> Result<AlgorithmIdentifierOwned> {
     let key_alg = spki.algorithm.oid;
+    if slh_dsa_digest_bits(key_alg).is_some() {
+        return Ok(AlgorithmIdentifierOwned {
+            oid: key_alg,
+            parameters: None,
+        });
+    }
     let (oid, parameters) = match (key_alg, digest) {
         (RSA_ENCRYPTION, DigestAlgorithm::Sha256) => {
             (SHA_256_WITH_RSA_ENCRYPTION, Some(Any::null()))
@@ -179,6 +198,21 @@ pub(crate) fn signer_digest(
     chosen: Option<DigestAlgorithm>,
 ) -> Result<DigestAlgorithm> {
     let Some(used) = signature_algorithm_digest(signature_algorithm)? else {
+        if let Some(bits) = slh_dsa_digest_bits(signature_algorithm.oid) {
+            // RFC 9814, section 4: with signed attributes, a digest at least twice the size of the
+            // hash in the SLH-DSA tree, by default the one its table pairs with the parameter set.
+            let digest = chosen.unwrap_or(if bits == 256 {
+                DigestAlgorithm::Sha256
+            } else {
+                DigestAlgorithm::Sha512
+            });
+            if digest.bits() < bits {
+                return Err(Error::InvalidInput(format!(
+                    "a {digest:?} digest with an SLH-DSA parameter set needing {bits} bits"
+                )));
+            }
+            return Ok(digest);
+        }
         let default = match signature_algorithm.oid {
             ID_ML_DSA_44 | ID_ML_DSA_65 | ID_ML_DSA_87 => DigestAlgorithm::Sha512,
             _ => DigestAlgorithm::Sha256,
@@ -193,6 +227,19 @@ pub(crate) fn signer_digest(
         }
     }
     DigestAlgorithm::from_oid(used).ok_or(Error::Unrecognized)
+}
+
+/// The smallest digest, in bits, RFC 9814 (section 4) allows with signed attributes for the SHA2
+/// SLH-DSA parameter set `oid`, twice the size of the hash in its tree; `None` for any other
+/// algorithm. The SHAKE parameter sets pair with SHAKE digests, which are not among the
+/// [`DigestAlgorithm`]s.
+pub(crate) fn slh_dsa_digest_bits(oid: ObjectIdentifier) -> Option<usize> {
+    match oid {
+        ID_SLH_DSA_SHA_2_128_S | ID_SLH_DSA_SHA_2_128_F => Some(256),
+        ID_SLH_DSA_SHA_2_192_S | ID_SLH_DSA_SHA_2_192_F => Some(384),
+        ID_SLH_DSA_SHA_2_256_S | ID_SLH_DSA_SHA_2_256_F => Some(512),
+        _ => None,
+    }
 }
 
 /// A [`SigningCredential`] around any [`signature::Signer`] that knows its signature algorithm, e.g.
@@ -533,7 +580,9 @@ impl<'c> Signer<'c> {
 
     /// The digest algorithm, which must be the one the signature algorithm uses, when it uses
     /// one (RFC 5754, section 3); unless set, that one, or for an algorithm hashing nothing itself,
-    /// SHA-512 for ML-DSA (RFC 9881) and SHA-256 otherwise.
+    /// SHA-512 for ML-DSA (RFC 9881), the digest RFC 9814 pairs with an SLH-DSA parameter set
+    /// (SHA-256 for the 128-bit sets, SHA-512 otherwise), and SHA-256 otherwise. For SLH-DSA, a
+    /// digest shorter than RFC 9814 allows is refused.
     pub fn digest(mut self, digest: DigestAlgorithm) -> Self {
         self.digest = Some(digest);
         self
@@ -570,9 +619,10 @@ impl<'c> Signer<'c> {
     }
 
     /// Adds a signing-time attribute with `time`, which the caller supplies so that the builder
-    /// needs no clock.
+    /// needs no clock. It is encoded as RFC 5652, section 11.3 requires: UTCTime through 2049,
+    /// GeneralizedTime after, whichever form `time` is in.
     pub fn signing_time(mut self, time: Time) -> Self {
-        self.signing_time = Some(time);
+        self.signing_time = Some(Time::from(time.to_date_time()));
         self
     }
 }

@@ -33,7 +33,8 @@ use crate::error::{Error, Result};
 #[derive(Clone)]
 #[non_exhaustive]
 pub enum Vetting {
-    /// No settings were passed, so the key was taken from the certificate as given.
+    /// No settings were passed, so the key was taken from the certificate as given: nothing about
+    /// the certificate was checked, its key usage included.
     NotPerformed,
     /// certval validated a path from the certificate to a trust anchor. The results hold the
     /// path's outcome, including the policy processing.
@@ -125,7 +126,7 @@ impl CmsEnvironment {
         self.pki_environment.as_ref()
     }
 
-    /// Vets `cert` for `key_use` under `settings`, or does not, when `settings` is `None`.
+    /// Vets `cert` for `key_use` under `settings`.
     ///
     /// Vetting builds the certification paths from `cert` to a trust anchor through the
     /// [`PkiEnvironment`]'s sources and validates them (RFC 5280) until one is valid, checking
@@ -136,13 +137,12 @@ impl CmsEnvironment {
     /// Likewise the time of interest is the settings', which under certval without `std` is
     /// disabled unless set.
     ///
-    /// Returns [`Vetting::NotPerformed`] when `settings` is `None`, and
-    /// [`Error::NoPkiEnvironment`] when `settings` is given but no `PkiEnvironment` is set.
+    /// Returns [`Error::NoPkiEnvironment`] when no `PkiEnvironment` is set.
     pub fn vet_certificate(
         &self,
         cert: &Certificate,
         key_use: KeyUse,
-        settings: Option<&CertificationPathSettings>,
+        settings: &CertificationPathSettings,
     ) -> Result<Vetting> {
         Ok(self.vet_with_candidates(cert, key_use, settings, &[])?.0)
     }
@@ -156,12 +156,9 @@ impl CmsEnvironment {
         &self,
         cert: &Certificate,
         key_use: KeyUse,
-        settings: Option<&CertificationPathSettings>,
+        settings: &CertificationPathSettings,
         candidates: &[Certificate],
     ) -> Result<(Vetting, Vec<Certificate>)> {
-        let Some(settings) = settings else {
-            return Ok((Vetting::NotPerformed, vec![]));
-        };
         let Some(pe) = &self.pki_environment else {
             return Err(Error::NoPkiEnvironment);
         };

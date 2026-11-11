@@ -307,8 +307,12 @@ impl CmsEnvironment {
             e => Error::Certval(e),
         })?;
 
-        let (vetting, message_ca_certificates) =
-            self.vet_with_candidates(&certificate, KeyUse::Signing, settings, message_certs)?;
+        let (vetting, message_ca_certificates) = match settings {
+            Some(settings) => {
+                self.vet_with_candidates(&certificate, KeyUse::Signing, settings, message_certs)?
+            }
+            None => (Vetting::NotPerformed, vec![]),
+        };
         Ok(VerifiedSigner {
             sid: signer.sid.clone(),
             certificate,
@@ -326,7 +330,8 @@ impl CmsEnvironment {
     /// attributes are checked against the content; the signature is verified with the
     /// `PkiEnvironment`'s providers, as is a signing-certificate-v2 attribute (RFC 5035) if the
     /// signer has one; and, with `settings`, the certificate is vetted for signing
-    /// (see [`vet_certificate`](Self::vet_certificate)). When the `PkiEnvironment` has no path for
+    /// (see [`vet_certificate`](Self::vet_certificate)). Without settings, the certificate is not
+    /// checked at all, its key usage included. When the `PkiEnvironment` has no path for
     /// it, paths are prepared through the CA certificates the message carries, and those a validated
     /// path needed are reported in [`VerifiedSigner::message_ca_certificates`]; the
     /// `PkiEnvironment` is not changed.

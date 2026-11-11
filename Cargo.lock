@@ -188,6 +188,7 @@ dependencies = [
  "sha1",
  "sha2",
  "signature",
+ "slh-dsa",
  "spki",
  "subtle",
  "tempfile",
@@ -1038,6 +1039,7 @@ dependencies = [
  "signature",
  "typenum",
  "zerocopy",
+ "zeroize",
 ]
 
 [[package]]

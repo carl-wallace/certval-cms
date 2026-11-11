@@ -119,7 +119,8 @@ ECDH with the SHA-1 X9.63 KDF, OpenSSL's default for `cms -encrypt`, is not supp
 
 `SignedDataBuilder` signs with one or more signers, each with its own credential and signature
 algorithm, which defaults from the key, or from what the credential prefers; the digest algorithm
-is the one the signature algorithm uses, or SHA-512 for ML-DSA, which uses none, unless set. Every
+is the one the signature algorithm uses, or for ML-DSA and SLH-DSA, which use none, SHA-512 for
+ML-DSA and the digest RFC 9814 pairs with the SLH-DSA parameter set, unless set. Every
 signer's signed attributes contain content-type and message-digest, an ESSCertIDv2 of
 its certificate in a signing-certificate-v2 attribute (RFC 5035) unless `without_ess_cert_id` is
 set, a signing time when one is given, and any others the caller adds. The content is encapsulated,
@@ -158,14 +159,15 @@ verification does not add them.
 
 `populate_software` registers RustCrypto implementations of the per-algorithm interfaces.
 `SoftwareRecipientKey` and `SoftwareSigningKey` are credentials for keys held in memory, from
-PKCS #8: RSA, EC on P-256, P-384 and P-521, ML-KEM, and, with `pqc`, ML-DSA. ML-KEM and ML-DSA
+PKCS #8: RSA, EC on P-256, P-384 and P-521, ML-KEM, and, with `pqc`, ML-DSA and SLH-DSA with a
+SHA2 parameter set (the SHAKE sets pair with SHAKE digests, which are not supported). ML-KEM and ML-DSA
 private keys are read in any of the three forms of RFC 9935 and RFC 9881, the seed, the expanded
 key, or both, which is the form OpenSSL writes.
 
 | Feature | |
 |---|---|
 | `rsa` | certval's software RSA signature verification |
-| `pqc` | ML-DSA signing in `SoftwareSigningKey`, and certval's software ML-DSA and SLH-DSA verification |
+| `pqc` | ML-DSA and SLH-DSA (SHA2 parameter sets) signing in `SoftwareSigningKey`, and certval's software ML-DSA and SLH-DSA verification |
 
 ## Providers
 

@@ -190,13 +190,17 @@ impl<'e, R: ?Sized> KeyTransRecipient<'e, R> {
 
     /// The recipient a certificate identifies, by [`recipient_identifier`]. With `settings`, the
     /// certificate is vetted for key transport first; see [`CmsEnvironment::vet_certificate`].
+    /// Without, it is not checked at all, its key usage included.
     pub fn from_certificate(
         env: &'e CmsEnvironment,
         cert: &Certificate,
         settings: Option<&CertificationPathSettings>,
         alg: KeyTransportAlgorithm,
     ) -> Result<Self> {
-        let vetting = env.vet_certificate(cert, KeyUse::KeyTransport, settings)?;
+        let vetting = match settings {
+            Some(settings) => env.vet_certificate(cert, KeyUse::KeyTransport, settings)?,
+            None => Vetting::NotPerformed,
+        };
         let mut recipient = Self::new(
             env,
             recipient_identifier(cert)?,
@@ -294,6 +298,7 @@ impl<'e, R: ?Sized> KeyAgreeRecipient<'e, R> {
 
     /// The recipient a certificate identifies, by [`recipient_identifier`]. With `settings`, the
     /// certificate is vetted for key agreement first; see [`CmsEnvironment::vet_certificate`].
+    /// Without, it is not checked at all, its key usage included.
     pub fn from_certificate(
         env: &'e CmsEnvironment,
         cert: &Certificate,
@@ -302,7 +307,10 @@ impl<'e, R: ?Sized> KeyAgreeRecipient<'e, R> {
         wrap: KeyWrapAlgorithm,
         ukm: Option<Vec<u8>>,
     ) -> Result<Self> {
-        let vetting = env.vet_certificate(cert, KeyUse::KeyAgreement, settings)?;
+        let vetting = match settings {
+            Some(settings) => env.vet_certificate(cert, KeyUse::KeyAgreement, settings)?,
+            None => Vetting::NotPerformed,
+        };
         let mut recipient = Self::new(
             env,
             recipient_identifier(cert)?,
@@ -411,6 +419,7 @@ impl<'e, R: ?Sized> KemRecipient<'e, R> {
 
     /// The recipient a certificate identifies, by [`recipient_identifier`]. With `settings`, the
     /// certificate is vetted for a KEM first; see [`CmsEnvironment::vet_certificate`].
+    /// Without, it is not checked at all, its key usage included.
     pub fn from_certificate(
         env: &'e CmsEnvironment,
         cert: &Certificate,
@@ -419,7 +428,10 @@ impl<'e, R: ?Sized> KemRecipient<'e, R> {
         wrap: KeyWrapAlgorithm,
         ukm: Option<Vec<u8>>,
     ) -> Result<Self> {
-        let vetting = env.vet_certificate(cert, KeyUse::Kem, settings)?;
+        let vetting = match settings {
+            Some(settings) => env.vet_certificate(cert, KeyUse::Kem, settings)?,
+            None => Vetting::NotPerformed,
+        };
         let mut recipient = Self::new(
             env,
             recipient_identifier(cert)?,
