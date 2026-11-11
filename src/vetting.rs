@@ -33,7 +33,8 @@ use crate::error::{Error, Result};
 #[derive(Clone)]
 #[non_exhaustive]
 pub enum Vetting {
-    /// No settings were passed, so the key was taken from the certificate as given.
+    /// No settings were passed, so the key was taken from the certificate as given: nothing about
+    /// the certificate was checked, its key usage included.
     NotPerformed,
     /// certval validated a path from the certificate to a trust anchor. The results hold the
     /// path's outcome, including the policy processing.
