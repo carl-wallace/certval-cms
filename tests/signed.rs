@@ -727,6 +727,118 @@ fn openssl_and_this_crate_verify_each_others_messages() {
     }
 }
 
+/// Writes `signatory`'s certificate and key as PEM to `dir`, named for `name`, and returns the two
+/// paths.
+fn write_signatory(
+    dir: &std::path::Path,
+    name: &str,
+    signatory: &Signatory,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let cert_path = dir.join(format!("{name}.pem"));
+    let key_path = dir.join(format!("{name}.key"));
+    std::fs::write(&cert_path, pem(&signatory.cert)).unwrap();
+    std::fs::write(
+        &key_path,
+        der::pem::encode_string("PRIVATE KEY", der::pem::LineEnding::LF, &signatory.pkcs8).unwrap(),
+    )
+    .unwrap();
+    (cert_path, key_path)
+}
+
+/// Signs `MESSAGE` with `openssl cms -sign` and the given arguments after the content.
+fn openssl_sign(
+    openssl: &str,
+    content_path: &std::path::Path,
+    args: &[&std::ffi::OsStr],
+) -> ContentInfo {
+    let output = Command::new(openssl)
+        .args([
+            "cms",
+            "-sign",
+            "-binary",
+            "-nodetach",
+            "-outform",
+            "DER",
+            "-in",
+        ])
+        .arg(content_path)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    ContentInfo::from_der(&output.stdout).unwrap()
+}
+
+#[test]
+fn openssl_messages_with_two_signers_or_an_intermediate_verify() {
+    let Some(openssl) = openssl() else { return };
+    let root = Ca::new("CN=root CA");
+    let intermediate = root.intermediate("CN=intermediate CA");
+    let env = environment(&root, &[]);
+    let dir = tempfile::tempdir().unwrap();
+    let content_path = dir.path().join("content");
+    std::fs::write(&content_path, MESSAGE).unwrap();
+
+    // Two signers, RSA and ECDSA, in one message.
+    let rsa = rsa_signatory(&root, 20);
+    let ec = ec_signatory!(p256, root, 21);
+    let (rsa_cert, rsa_key) = write_signatory(dir.path(), "rsa", &rsa);
+    let (ec_cert, ec_key) = write_signatory(dir.path(), "ec", &ec);
+    let ci = openssl_sign(
+        &openssl,
+        &content_path,
+        &[
+            "-signer".as_ref(),
+            rsa_cert.as_os_str(),
+            "-inkey".as_ref(),
+            rsa_key.as_os_str(),
+            "-signer".as_ref(),
+            ec_cert.as_os_str(),
+            "-inkey".as_ref(),
+            ec_key.as_os_str(),
+        ],
+    );
+    let verified = env
+        .verify_signed_data(&ci, None, Some(&settings()), SignerPolicy::All)
+        .unwrap();
+    assert_eq!(verified.content, MESSAGE);
+    assert_eq!(verified.signers.len(), 2);
+    assert!(verified
+        .signers
+        .iter()
+        .all(|s| matches!(s.vetting, Vetting::Validated(_))));
+
+    // A signer under an intermediate CA that only the message carries.
+    let leaf = rsa_signatory(&intermediate, 22);
+    let (leaf_cert, leaf_key) = write_signatory(dir.path(), "leaf", &leaf);
+    let intermediate_path = dir.path().join("intermediate.pem");
+    std::fs::write(&intermediate_path, pem(&intermediate.cert)).unwrap();
+    let ci = openssl_sign(
+        &openssl,
+        &content_path,
+        &[
+            "-signer".as_ref(),
+            leaf_cert.as_os_str(),
+            "-inkey".as_ref(),
+            leaf_key.as_os_str(),
+            "-certfile".as_ref(),
+            intermediate_path.as_os_str(),
+        ],
+    );
+    let verified = env
+        .verify_signed_data(&ci, None, Some(&settings()), SignerPolicy::All)
+        .unwrap();
+    assert!(matches!(verified.signers[0].vetting, Vetting::Validated(_)));
+    assert_eq!(
+        verified.signers[0].message_ca_certificates,
+        vec![intermediate.cert.clone()]
+    );
+}
+
 // ---- ESS signing-certificate
 
 fn signed_attribute_types(ci: &ContentInfo) -> Vec<const_oid::ObjectIdentifier> {

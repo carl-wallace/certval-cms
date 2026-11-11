@@ -541,12 +541,36 @@ impl RecipientCredential for FailingKeyTransport {
     }
 }
 
+/// Claims a recipient's certificate and returns a five-octet key from every key transport, a
+/// length no content-encryption algorithm uses.
+struct WrongLengthKeyTransport(Certificate);
+
+impl RecipientCredential for WrongLengthKeyTransport {
+    fn certificate(&self) -> &Certificate {
+        &self.0
+    }
+    fn decrypt_key_transport(
+        &self,
+        _env: &CmsEnvironment,
+        _alg: KeyTransportAlgorithm,
+        _encrypted_key: &[u8],
+    ) -> certval_cms::Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(vec![0x5a; 5]))
+    }
+}
+
 #[test]
 fn a_failed_pkcs1v15_key_transport_fails_as_content_decryption_does() {
     let env = software();
     let recipient = rsa_recipient(14, true);
     let failing = FailingKeyTransport(recipient.cert.clone());
-    for content in CONTENT {
+    let wrong_length = WrongLengthKeyTransport(recipient.cert.clone());
+    for (content, credential) in CONTENT.into_iter().flat_map(|content| {
+        [
+            (content, &failing as &dyn RecipientCredential),
+            (content, &wrong_length as &dyn RecipientCredential),
+        ]
+    }) {
         let ci = envelop(
             &env,
             content,
@@ -556,11 +580,12 @@ fn a_failed_pkcs1v15_key_transport_fails_as_content_decryption_does() {
                 KeyTransportAlgorithm::RsaPkcs1v15,
             )],
         );
-        // The credential's error is not what is reported: a random content-encryption key goes on
-        // to content decryption, which fails as it does for a wrong key (RFC 3218, section 2.3.2).
+        // Neither the credential's error nor its wrong-length key is what is used: a random
+        // content-encryption key goes on to content decryption, which fails as it does for a wrong
+        // key (RFC 3218, section 2.3.2).
         // GCM always detects it. CBC detects it only when the padding comes out malformed; about
         // one time in 256 it does not, and the result is not the message.
-        match env.decrypt_enveloped_data(&ci, Some(&failing)) {
+        match env.decrypt_enveloped_data(&ci, Some(credential)) {
             Err(Error::Crypto(e)) => assert_eq!(e, "content decryption failed", "{content:?}"),
             Ok(decrypted) => {
                 assert!(!content.is_authenticated(), "{content:?}");
@@ -836,6 +861,8 @@ fn messages_openssl_builds_are_decrypted() {
     let env = software();
     let rsa = rsa_recipient(17, true);
     let ec = ec_recipient!(p256, 18);
+    let ec384 = ec_recipient!(p384, 21);
+    let ec521 = ec_recipient!(p521, 22);
     let mut cases: Vec<(&Recipient, Vec<&str>)> = vec![
         (&rsa, vec!["-aes-128-cbc"]),
         (
@@ -854,17 +881,62 @@ fn messages_openssl_builds_are_decrypted() {
                 "rsa_mgf1_md:sha256",
             ],
         ),
+        (
+            &rsa,
+            vec![
+                "-aes-256-cbc",
+                "-keyopt",
+                "rsa_padding_mode:oaep",
+                "-keyopt",
+                "rsa_oaep_md:sha384",
+                "-keyopt",
+                "rsa_mgf1_md:sha384",
+            ],
+        ),
+        (
+            &rsa,
+            vec![
+                "-aes-256-gcm",
+                "-keyopt",
+                "rsa_padding_mode:oaep",
+                "-keyopt",
+                "rsa_oaep_md:sha512",
+                "-keyopt",
+                "rsa_mgf1_md:sha512",
+            ],
+        ),
         (&rsa, vec!["-aes-256-gcm"]),
+        (&rsa, vec!["-aes-192-gcm"]),
         (&rsa, vec!["-aes-128-gcm", "-keyid"]),
         // OpenSSL defaults to dhSinglePass-stdDH-sha1kdf-scheme, which this crate does not
         // process, so the SHA-256 scheme is asked for.
         (&ec, vec!["-aes-256-cbc", "-keyopt", "ecdh_kdf_md:sha256"]),
         (&ec, vec!["-aes-128-gcm", "-keyopt", "ecdh_kdf_md:sha384"]),
+        (
+            &ec384,
+            vec!["-aes-256-cbc", "-keyopt", "ecdh_kdf_md:sha384"],
+        ),
+        (
+            &ec384,
+            vec!["-aes-256-gcm", "-keyopt", "ecdh_kdf_md:sha512"],
+        ),
+        (
+            &ec521,
+            vec!["-aes-256-cbc", "-keyopt", "ecdh_kdf_md:sha512"],
+        ),
+        (
+            &ec521,
+            vec!["-aes-192-gcm", "-keyopt", "ecdh_kdf_md:sha256"],
+        ),
     ];
     let kem = kem_recipient!(MlKem768, 19);
+    let kem512 = kem_recipient!(MlKem512, 23);
+    let kem1024 = kem_recipient!(MlKem1024, 24);
     if openssl_version(&openssl) >= (3, 6) {
         cases.push((&kem, vec!["-aes-256-cbc"]));
         cases.push((&kem, vec!["-aes-256-gcm"]));
+        cases.push((&kem512, vec!["-aes-128-gcm"]));
+        cases.push((&kem1024, vec!["-aes-256-gcm"]));
     } else {
         eprintln!(
             "skipped for ML-KEM: {openssl} is older than OpenSSL 3.6, which added KEMRecipientInfo"

@@ -294,21 +294,21 @@ pub fn encrypt_kem_rust_crypto(
 ) -> Result<KemOutput> {
     let key = spki.subject_public_key.raw_bytes();
     let mut rng = rng();
-    let (kem_ct, ss): (Vec<u8>, Zeroizing<Vec<u8>>) = match spki.algorithm.oid {
+    let (kem_ct, ss): (Vec<u8>, Zeroizing<ml_kem::SharedKey>) = match spki.algorithm.oid {
         ID_ALG_ML_KEM_512 => {
             let ek = <MlKem512 as Kem>::EncapsulationKey::new_from_slice(key).map_err(crypto)?;
             let (ct, ss) = ek.encapsulate_with_rng(&mut rng);
-            (ct.to_vec(), Zeroizing::new(ss.to_vec()))
+            (ct.to_vec(), Zeroizing::new(ss))
         }
         ID_ALG_ML_KEM_768 => {
             let ek = <MlKem768 as Kem>::EncapsulationKey::new_from_slice(key).map_err(crypto)?;
             let (ct, ss) = ek.encapsulate_with_rng(&mut rng);
-            (ct.to_vec(), Zeroizing::new(ss.to_vec()))
+            (ct.to_vec(), Zeroizing::new(ss))
         }
         ID_ALG_ML_KEM_1024 => {
             let ek = <MlKem1024 as Kem>::EncapsulationKey::new_from_slice(key).map_err(crypto)?;
             let (ct, ss) = ek.encapsulate_with_rng(&mut rng);
-            (ct.to_vec(), Zeroizing::new(ss.to_vec()))
+            (ct.to_vec(), Zeroizing::new(ss))
         }
         _ => return Err(Error::Unrecognized),
     };
@@ -385,23 +385,28 @@ macro_rules! ml_kem_key {
         #[allow(deprecated)]
         use ml_kem::ExpandedKeyEncoding;
         let malformed = || Error::InvalidInput(String::from("an ML-KEM private key malformed"));
-        let from_seed = |seed: &OctetString| -> Result<$key> {
-            Ok(<$key>::from_seed(
-                seed.as_bytes().try_into().map_err(|_| malformed())?,
-            ))
+        // Each piece of key material decoded here is held in Zeroizing, so that it is cleared when
+        // dropped rather than left in memory.
+        let from_seed = |seed: &[u8]| -> Result<$key> {
+            let seed: Zeroizing<ml_kem::Seed> =
+                Zeroizing::new(seed.try_into().map_err(|_| malformed())?);
+            Ok(<$key>::from_seed(*seed))
         };
         match SeedOrExpandedKey::from_der($private_key)? {
-            SeedOrExpandedKey::Seed(seed) => from_seed(&seed)?,
+            SeedOrExpandedKey::Seed(seed) => from_seed(&Zeroizing::new(seed.into_bytes()))?,
             #[allow(deprecated)]
-            SeedOrExpandedKey::ExpandedKey(expanded) => <$key>::from_expanded_bytes(
-                expanded.as_bytes().try_into().map_err(|_| malformed())?,
-            )
-            .map_err(|_| malformed())?,
+            SeedOrExpandedKey::ExpandedKey(expanded) => {
+                let expanded = Zeroizing::new(expanded.into_bytes());
+                <$key>::from_expanded_bytes(expanded.as_ref().try_into().map_err(|_| malformed())?)
+                    .map_err(|_| malformed())?
+            }
             SeedOrExpandedKey::Both(both) => {
-                let key = from_seed(&both.seed)?;
+                let seed = Zeroizing::new(both.seed.into_bytes());
+                let expected = Zeroizing::new(both.expanded_key.into_bytes());
+                let key = from_seed(&seed)?;
                 #[allow(deprecated)]
-                let expanded = key.to_expanded_bytes();
-                if expanded.as_slice() != both.expanded_key.as_bytes() {
+                let expanded = Zeroizing::new(key.to_expanded_bytes());
+                if expanded.as_slice() != expected.as_ref() {
                     return Err(Error::InvalidInput(String::from(
                         "an ML-KEM private key whose expanded key is not its seed's",
                     )));
@@ -600,15 +605,15 @@ impl RecipientCredential for SoftwareRecipientKey {
         ukm: Option<&[u8]>,
         encrypted_key: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>> {
-        let ss: Zeroizing<Vec<u8>> = match &self.key {
+        let ss: Zeroizing<ml_kem::SharedKey> = match &self.key {
             RecipientKeyMaterial::MlKem512(k) => {
-                Zeroizing::new(k.decapsulate_slice(kem_ct).map_err(crypto)?.to_vec())
+                Zeroizing::new(k.decapsulate_slice(kem_ct).map_err(crypto)?)
             }
             RecipientKeyMaterial::MlKem768(k) => {
-                Zeroizing::new(k.decapsulate_slice(kem_ct).map_err(crypto)?.to_vec())
+                Zeroizing::new(k.decapsulate_slice(kem_ct).map_err(crypto)?)
             }
             RecipientKeyMaterial::MlKem1024(k) => {
-                Zeroizing::new(k.decapsulate_slice(kem_ct).map_err(crypto)?.to_vec())
+                Zeroizing::new(k.decapsulate_slice(kem_ct).map_err(crypto)?)
             }
             _ => return Err(Error::Unrecognized),
         };
@@ -654,25 +659,31 @@ impl core::fmt::Debug for SigningKeyMaterial {
 macro_rules! ml_dsa_key {
     ($params:ty, $private_key:expr) => {{
         let malformed = || Error::InvalidInput(String::from("an ML-DSA private key malformed"));
-        let from_seed = |seed: &OctetString| -> Result<ml_dsa::ExpandedSigningKey<$params>> {
-            let seed = seed.as_bytes().try_into().map_err(|_| malformed())?;
+        // Each piece of key material decoded here is held in Zeroizing, so that it is cleared when
+        // dropped rather than left in memory.
+        let from_seed = |seed: &[u8]| -> Result<ml_dsa::ExpandedSigningKey<$params>> {
+            let seed: Zeroizing<ml_dsa::Seed> =
+                Zeroizing::new(seed.try_into().map_err(|_| malformed())?);
             Ok(ml_dsa::SigningKey::<$params>::from_seed(&seed)
                 .expanded_key()
                 .clone())
         };
         match SeedOrExpandedKey::from_der($private_key)? {
-            SeedOrExpandedKey::Seed(seed) => from_seed(&seed)?,
+            SeedOrExpandedKey::Seed(seed) => from_seed(&Zeroizing::new(seed.into_bytes()))?,
             #[allow(deprecated)]
             SeedOrExpandedKey::ExpandedKey(expanded) => {
+                let expanded = Zeroizing::new(expanded.into_bytes());
                 ml_dsa::ExpandedSigningKey::<$params>::from_expanded(
-                    expanded.as_bytes().try_into().map_err(|_| malformed())?,
+                    expanded.as_ref().try_into().map_err(|_| malformed())?,
                 )
             }
             SeedOrExpandedKey::Both(both) => {
-                let key = from_seed(&both.seed)?;
+                let seed = Zeroizing::new(both.seed.into_bytes());
+                let expected = Zeroizing::new(both.expanded_key.into_bytes());
+                let key = from_seed(&seed)?;
                 #[allow(deprecated)]
-                let expanded = key.to_expanded();
-                if expanded.as_slice() != both.expanded_key.as_bytes() {
+                let expanded = Zeroizing::new(key.to_expanded());
+                if expanded.as_slice() != expected.as_ref() {
                     return Err(Error::InvalidInput(String::from(
                         "an ML-DSA private key whose expanded key is not its seed's",
                     )));
