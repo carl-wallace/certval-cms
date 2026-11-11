@@ -570,9 +570,10 @@ impl<'c> Signer<'c> {
     }
 
     /// Adds a signing-time attribute with `time`, which the caller supplies so that the builder
-    /// needs no clock.
+    /// needs no clock. It is encoded as RFC 5652, section 11.3 requires: UTCTime through 2049,
+    /// GeneralizedTime after, whichever form `time` is in.
     pub fn signing_time(mut self, time: Time) -> Self {
-        self.signing_time = Some(time);
+        self.signing_time = Some(Time::from(time.to_date_time()));
         self
     }
 }

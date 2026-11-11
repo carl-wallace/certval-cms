@@ -852,6 +852,43 @@ fn signed_attribute_types(ci: &ContentInfo) -> Vec<const_oid::ObjectIdentifier> 
         .collect()
 }
 
+/// The signing-time attribute is UTCTime through 2049 and GeneralizedTime after (RFC 5652, section
+/// 11.3), whichever form the caller's time is in.
+#[test]
+fn signing_time_is_utc_time_through_2049() {
+    use const_oid::db::rfc5911::ID_SIGNING_TIME;
+    use der::{asn1::GeneralizedTime, DateTime};
+    use x509_cert::time::Time;
+
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let credential = rsa_signatory(&ca, 23).credential();
+    let encoded = |time: Time| {
+        let ci = sign(&env, Signer::explicit(&credential).signing_time(time));
+        let sd = signed_data(&ci);
+        let info = sd.signer_infos.0.iter().next().unwrap();
+        let attr = info
+            .signed_attrs
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|a| a.oid == ID_SIGNING_TIME)
+            .unwrap()
+            .clone();
+        Time::from_der(&attr.values.iter().next().unwrap().to_der().unwrap()).unwrap()
+    };
+    let in_range = DateTime::new(2026, 11, 11, 12, 0, 0).unwrap();
+    let beyond = DateTime::new(2050, 1, 1, 0, 0, 0).unwrap();
+    assert!(matches!(
+        encoded(Time::GeneralTime(GeneralizedTime::from_date_time(in_range))),
+        Time::UtcTime(_)
+    ));
+    assert!(matches!(
+        encoded(Time::GeneralTime(GeneralizedTime::from_date_time(beyond))),
+        Time::GeneralTime(_)
+    ));
+}
+
 #[test]
 fn an_ess_cert_id_is_added_unless_left_out() {
     use const_oid::db::rfc5911::ID_AA_SIGNING_CERTIFICATE_V_2;
