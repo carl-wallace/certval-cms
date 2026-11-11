@@ -159,15 +159,14 @@ verification does not add them.
 
 `populate_software` registers RustCrypto implementations of the per-algorithm interfaces.
 `SoftwareRecipientKey` and `SoftwareSigningKey` are credentials for keys held in memory, from
-PKCS #8: RSA, EC on P-256, P-384 and P-521, ML-KEM, and, with `pqc`, ML-DSA and SLH-DSA with a
-SHA2 parameter set (the SHAKE sets pair with SHAKE digests, which are not supported). ML-KEM and ML-DSA
+PKCS #8: RSA, EC on P-256, P-384 and P-521, ML-KEM, and, with `pqc`, ML-DSA and SLH-DSA. ML-KEM and ML-DSA
 private keys are read in any of the three forms of RFC 9935 and RFC 9881, the seed, the expanded
 key, or both, which is the form OpenSSL writes.
 
 | Feature | |
 |---|---|
 | `rsa` | certval's software RSA signature verification |
-| `pqc` | ML-DSA and SLH-DSA (SHA2 parameter sets) signing in `SoftwareSigningKey`, and certval's software ML-DSA and SLH-DSA verification |
+| `pqc` | ML-DSA and SLH-DSA signing in `SoftwareSigningKey`, SHAKE128/256 message digests, and certval's software ML-DSA and SLH-DSA verification |
 
 ## Providers
 

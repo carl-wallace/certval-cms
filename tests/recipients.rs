@@ -41,7 +41,7 @@ use ml_kem::{Decapsulate as _, Kem, MlKem1024, MlKem512, MlKem768};
 use rand_core::UnwrapErr;
 use rsa::{
     pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding},
-    Oaep, Pkcs1v15Encrypt, RsaPrivateKey, RsaPublicKey,
+    Oaep, Pkcs1v15Encrypt, PrivateKey as RsaPrivateKey, PublicKey as RsaPublicKey,
 };
 use sha2::{Sha256, Sha384, Sha512};
 use spki::{AlgorithmIdentifierOwned, SubjectPublicKeyInfoOwned};
