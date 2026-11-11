@@ -836,6 +836,8 @@ fn messages_openssl_builds_are_decrypted() {
     let env = software();
     let rsa = rsa_recipient(17, true);
     let ec = ec_recipient!(p256, 18);
+    let ec384 = ec_recipient!(p384, 21);
+    let ec521 = ec_recipient!(p521, 22);
     let mut cases: Vec<(&Recipient, Vec<&str>)> = vec![
         (&rsa, vec!["-aes-128-cbc"]),
         (
@@ -854,17 +856,62 @@ fn messages_openssl_builds_are_decrypted() {
                 "rsa_mgf1_md:sha256",
             ],
         ),
+        (
+            &rsa,
+            vec![
+                "-aes-256-cbc",
+                "-keyopt",
+                "rsa_padding_mode:oaep",
+                "-keyopt",
+                "rsa_oaep_md:sha384",
+                "-keyopt",
+                "rsa_mgf1_md:sha384",
+            ],
+        ),
+        (
+            &rsa,
+            vec![
+                "-aes-256-gcm",
+                "-keyopt",
+                "rsa_padding_mode:oaep",
+                "-keyopt",
+                "rsa_oaep_md:sha512",
+                "-keyopt",
+                "rsa_mgf1_md:sha512",
+            ],
+        ),
         (&rsa, vec!["-aes-256-gcm"]),
+        (&rsa, vec!["-aes-192-gcm"]),
         (&rsa, vec!["-aes-128-gcm", "-keyid"]),
         // OpenSSL defaults to dhSinglePass-stdDH-sha1kdf-scheme, which this crate does not
         // process, so the SHA-256 scheme is asked for.
         (&ec, vec!["-aes-256-cbc", "-keyopt", "ecdh_kdf_md:sha256"]),
         (&ec, vec!["-aes-128-gcm", "-keyopt", "ecdh_kdf_md:sha384"]),
+        (
+            &ec384,
+            vec!["-aes-256-cbc", "-keyopt", "ecdh_kdf_md:sha384"],
+        ),
+        (
+            &ec384,
+            vec!["-aes-256-gcm", "-keyopt", "ecdh_kdf_md:sha512"],
+        ),
+        (
+            &ec521,
+            vec!["-aes-256-cbc", "-keyopt", "ecdh_kdf_md:sha512"],
+        ),
+        (
+            &ec521,
+            vec!["-aes-192-gcm", "-keyopt", "ecdh_kdf_md:sha256"],
+        ),
     ];
     let kem = kem_recipient!(MlKem768, 19);
+    let kem512 = kem_recipient!(MlKem512, 23);
+    let kem1024 = kem_recipient!(MlKem1024, 24);
     if openssl_version(&openssl) >= (3, 6) {
         cases.push((&kem, vec!["-aes-256-cbc"]));
         cases.push((&kem, vec!["-aes-256-gcm"]));
+        cases.push((&kem512, vec!["-aes-128-gcm"]));
+        cases.push((&kem1024, vec!["-aes-256-gcm"]));
     } else {
         eprintln!(
             "skipped for ML-KEM: {openssl} is older than OpenSSL 3.6, which added KEMRecipientInfo"
