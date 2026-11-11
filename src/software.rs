@@ -545,7 +545,7 @@ where
     C::AffinePoint: FromSec1Point<C> + ToSec1Point<C>,
 {
     let originator = PublicKey::<C>::from_sec1_bytes(originator.subject_public_key.raw_bytes())
-        .map_err(crypto)?;
+        .map_err(|_| Error::Crypto(String::from("key agreement failed")))?;
     let shared =
         elliptic_curve::ecdh::diffie_hellman(key.to_nonzero_scalar(), originator.as_affine());
     Ok(Zeroizing::new(shared.raw_secret_bytes().to_vec()))

@@ -44,7 +44,7 @@ impl fmt::Display for Error {
             Error::NoPkiEnvironment => {
                 f.write_str("vetting was asked for, but no PkiEnvironment is set")
             }
-            Error::Certval(e) => write!(f, "certval: {e}"),
+            Error::Certval(e) => write!(f, "{e}"),
             Error::NoMatchingRecipient => {
                 f.write_str("no recipient of the message matches an available credential")
             }
