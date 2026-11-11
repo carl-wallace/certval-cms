@@ -541,12 +541,36 @@ impl RecipientCredential for FailingKeyTransport {
     }
 }
 
+/// Claims a recipient's certificate and returns a five-octet key from every key transport, a
+/// length no content-encryption algorithm uses.
+struct WrongLengthKeyTransport(Certificate);
+
+impl RecipientCredential for WrongLengthKeyTransport {
+    fn certificate(&self) -> &Certificate {
+        &self.0
+    }
+    fn decrypt_key_transport(
+        &self,
+        _env: &CmsEnvironment,
+        _alg: KeyTransportAlgorithm,
+        _encrypted_key: &[u8],
+    ) -> certval_cms::Result<Zeroizing<Vec<u8>>> {
+        Ok(Zeroizing::new(vec![0x5a; 5]))
+    }
+}
+
 #[test]
 fn a_failed_pkcs1v15_key_transport_fails_as_content_decryption_does() {
     let env = software();
     let recipient = rsa_recipient(14, true);
     let failing = FailingKeyTransport(recipient.cert.clone());
-    for content in CONTENT {
+    let wrong_length = WrongLengthKeyTransport(recipient.cert.clone());
+    for (content, credential) in CONTENT.into_iter().flat_map(|content| {
+        [
+            (content, &failing as &dyn RecipientCredential),
+            (content, &wrong_length as &dyn RecipientCredential),
+        ]
+    }) {
         let ci = envelop(
             &env,
             content,
@@ -556,11 +580,12 @@ fn a_failed_pkcs1v15_key_transport_fails_as_content_decryption_does() {
                 KeyTransportAlgorithm::RsaPkcs1v15,
             )],
         );
-        // The credential's error is not what is reported: a random content-encryption key goes on
-        // to content decryption, which fails as it does for a wrong key (RFC 3218, section 2.3.2).
+        // Neither the credential's error nor its wrong-length key is what is used: a random
+        // content-encryption key goes on to content decryption, which fails as it does for a wrong
+        // key (RFC 3218, section 2.3.2).
         // GCM always detects it. CBC detects it only when the padding comes out malformed; about
         // one time in 256 it does not, and the result is not the message.
-        match env.decrypt_enveloped_data(&ci, Some(&failing)) {
+        match env.decrypt_enveloped_data(&ci, Some(credential)) {
             Err(Error::Crypto(e)) => assert_eq!(e, "content decryption failed", "{content:?}"),
             Ok(decrypted) => {
                 assert!(!content.is_authenticated(), "{content:?}");

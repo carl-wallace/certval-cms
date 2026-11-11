@@ -17,6 +17,7 @@ use const_oid::db::rfc5911::{
 use const_oid::ObjectIdentifier;
 use der::{Decode, Encode};
 use spki::SubjectPublicKeyInfoOwned;
+use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 use zeroize::Zeroizing;
 
 use crate::algorithms::{
@@ -349,17 +350,29 @@ impl CmsEnvironment {
                     // RFC 3218, section 2.3.2: a failed RSAES-PKCS1-v1_5 decryption, or one
                     // yielding a key of the wrong length, goes on with a random content-encryption
                     // key, so that it fails at content decryption, as a wrong key does, rather than
-                    // revealing that the padding was malformed.
-                    match result {
-                        Ok(key) => {
-                            if key.len() == content_alg.key_len() {
-                                key
-                            } else {
-                                random_key(content_alg)?
-                            }
-                        }
-                        Err(_) => random_key(content_alg)?,
+                    // revealing that the padding was malformed. The random key is drawn and the
+                    // choice made in constant time whatever the outcome, so that a valid and an
+                    // invalid padding take the same path here. A failure to draw it matters only
+                    // when the random key is the one chosen.
+                    let len = content_alg.key_len();
+                    let random = random_key(content_alg);
+                    let (decrypted, use_decrypted): (&[u8], Choice) = match &result {
+                        Ok(key) => (key, key.len().ct_eq(&len)),
+                        Err(_) => (&[], Choice::from(0)),
+                    };
+                    let fallback: &[u8] = random.as_ref().map_or(&[], |key| key.as_slice());
+                    let mut key = Zeroizing::new(vec![0u8; len]);
+                    for (i, octet) in key.iter_mut().enumerate() {
+                        let d = decrypted.get(i).copied().unwrap_or(0);
+                        let r = fallback.get(i).copied().unwrap_or(0);
+                        *octet = u8::conditional_select(&r, &d, use_decrypted);
                     }
+                    if let Err(e) = random {
+                        if !bool::from(use_decrypted) {
+                            return Err(e);
+                        }
+                    }
+                    key
                 } else {
                     result?
                 };
