@@ -227,13 +227,13 @@ pub fn content_decryption_parameters(
             // the RFC allows is refused here, before an implementation that would accept it.
             if !(GCM_MIN_TAG_LEN..=GCM_TAG_LEN).contains(&usize::from(params.icv_len)) {
                 return Err(Error::InvalidInput(format!(
-                    "GCMParameters gives a {}-octet tag; RFC 5084 allows 12 to 16",
+                    "GCMParameters gives a tag of {} octets; RFC 5084 allows 12 to 16",
                     params.icv_len
                 )));
             }
             if usize::from(params.icv_len) != tag.len() {
                 return Err(Error::InvalidInput(format!(
-                    "a {}-octet tag where GCMParameters gives {}",
+                    "a tag of {} octets where GCMParameters gives {}",
                     tag.len(),
                     params.icv_len
                 )));
