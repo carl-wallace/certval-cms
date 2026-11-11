@@ -323,6 +323,82 @@ fn key_agreement_on_p521() {
     key_agreement_round_trips!(p521);
 }
 
+/// A KeyAgreeRecipientInfo to a P-256 recipient whose originator key's algorithm identifier is
+/// replaced: absent or NULL parameters decrypt, as RFC 5753 allows; another curve or another
+/// algorithm is refused.
+#[test]
+fn an_originator_key_not_on_the_recipients_curve_is_refused() {
+    use cms::enveloped_data::{EnvelopedData, OriginatorIdentifierOrKey, RecipientInfo};
+    use const_oid::db::rfc5912::{ID_EC_PUBLIC_KEY, RSA_ENCRYPTION, SECP_384_R_1};
+
+    let env = software();
+    let recipient = ec_recipient!(p256, 25);
+    let r = KeyAgreeRecipient::from_certificate(
+        &env,
+        &recipient.cert,
+        None,
+        KeyAgreementAlgorithm::EcdhSha256,
+        KeyWrapAlgorithm::Aes256,
+        None,
+    )
+    .unwrap();
+    let ci = envelop(
+        &env,
+        ContentEncryptionAlgorithm::Aes256Cbc,
+        vec![Box::new(r)],
+    );
+    let relabelled = |oid, parameters: Option<Any>| {
+        let mut ed = EnvelopedData::from_der(&ci.content.to_der().unwrap()).unwrap();
+        let mut infos: Vec<_> = ed.recip_infos.0.iter().cloned().collect();
+        let RecipientInfo::Kari(kari) = &mut infos[0] else {
+            panic!("not key agreement");
+        };
+        let OriginatorIdentifierOrKey::OriginatorKey(key) = &mut kari.originator else {
+            panic!("no originator key");
+        };
+        key.algorithm.oid = oid;
+        key.algorithm.parameters = parameters;
+        ed.recip_infos = cms::enveloped_data::RecipientInfos::try_from(infos).unwrap();
+        ContentInfo {
+            content_type: ci.content_type,
+            content: Any::encode_from(&ed).unwrap(),
+        }
+    };
+    let credential = recipient.credential();
+
+    for (name, parameters) in [
+        ("absent parameters", None),
+        ("NULL parameters", Some(Any::from(der::asn1::Null))),
+    ] {
+        assert_decrypts(
+            &env,
+            &relabelled(ID_EC_PUBLIC_KEY, parameters),
+            &credential,
+            name,
+        );
+    }
+    for (name, oid, parameters) in [
+        (
+            "P-384",
+            ID_EC_PUBLIC_KEY,
+            Some(Any::encode_from(&SECP_384_R_1).unwrap()),
+        ),
+        (
+            "rsaEncryption",
+            RSA_ENCRYPTION,
+            Some(Any::from(der::asn1::Null)),
+        ),
+    ] {
+        assert!(
+            matches!(
+                env.decrypt_enveloped_data(&relabelled(oid, parameters), Some(&credential)),
+                Err(Error::InvalidInput(_))
+            ),
+            "{name}"
+        );
+    }
+}
+
 macro_rules! kem_round_trips {
     ($kem:ty) => {{
         let env = software();

@@ -14,10 +14,12 @@ use cms::{
 use const_oid::db::rfc5911::{
     ID_CONTENT_TYPE, ID_CT_AUTH_ENVELOPED_DATA, ID_DATA, ID_ENVELOPED_DATA,
 };
+use const_oid::db::rfc5912::ID_EC_PUBLIC_KEY;
 use const_oid::ObjectIdentifier;
-use der::{Decode, Encode};
+use der::{Decode, Encode, Tag, Tagged};
 use spki::SubjectPublicKeyInfoOwned;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
+use x509_cert::Certificate;
 use zeroize::Zeroizing;
 
 use crate::algorithms::{
@@ -231,6 +233,40 @@ pub(crate) fn content_type_attribute(attrs: &AuthAttributes) -> Result<Option<Ob
     Ok(Some(ObjectIdentifier::from_der(&value.to_der()?)?))
 }
 
+/// Checks a KeyAgreeRecipientInfo's originator key against the recipient's certificate (RFC 5753,
+/// section 3.1.1): its algorithm must be id-ecPublicKey, and its parameters absent, NULL, or the
+/// named curve of the recipient's key. Explicit curve parameters are refused, as certval refuses
+/// them elsewhere.
+fn check_originator(originator: &SubjectPublicKeyInfoOwned, recipient: &Certificate) -> Result<()> {
+    let refuse = || {
+        Err(Error::InvalidInput(String::from(
+            "the originator key is not an EC key on the recipient's curve",
+        )))
+    };
+    if originator.algorithm.oid != ID_EC_PUBLIC_KEY {
+        return refuse();
+    }
+    let Some(parameters) = &originator.algorithm.parameters else {
+        return Ok(());
+    };
+    if parameters.tag() == Tag::Null {
+        return Ok(());
+    }
+    let recipient_curve = recipient
+        .tbs_certificate()
+        .subject_public_key_info()
+        .algorithm
+        .parameters
+        .as_ref()
+        .and_then(|p| p.decode_as::<ObjectIdentifier>().ok());
+    let curve = parameters.decode_as::<ObjectIdentifier>().ok();
+    if curve.is_some() && curve == recipient_curve {
+        Ok(())
+    } else {
+        refuse()
+    }
+}
+
 /// A random content-encryption key, the length `alg` takes.
 fn random_key(alg: ContentEncryptionAlgorithm) -> Result<Zeroizing<Vec<u8>>> {
     let mut key = Zeroizing::new(vec![0u8; alg.key_len()]);
@@ -300,14 +336,16 @@ impl CmsEnvironment {
                         originator,
                         ukm,
                         encrypted_key,
-                    } => credential.decrypt_key_agreement(
-                        self,
-                        *alg,
-                        *wrap,
-                        originator,
-                        *ukm,
-                        encrypted_key,
-                    ),
+                    } => check_originator(originator, credential.certificate()).and_then(|()| {
+                        credential.decrypt_key_agreement(
+                            self,
+                            *alg,
+                            *wrap,
+                            originator,
+                            *ukm,
+                            encrypted_key,
+                        )
+                    }),
                     Operation::Kem {
                         kdf,
                         wrap,
