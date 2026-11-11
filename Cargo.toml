@@ -21,9 +21,9 @@ include = ["src/**/*.rs", "README.md", "CHANGELOG.md", "LICENSE-APACHE", "LICENS
 # the PkiEnvironment verifies RSA. Off by default, so that the application, not this crate, decides
 # which algorithms certval's software offers.
 rsa = ["certval/rsa"]
-# ML-DSA: signing with SoftwareSigningKey, and certval's software ML-DSA and SLH-DSA signature
-# verification.
-pqc = ["dep:ml-dsa", "certval/pqc"]
+# ML-DSA and SLH-DSA (its SHA2 parameter sets): signing with SoftwareSigningKey, and certval's software
+# ML-DSA and SLH-DSA signature verification.
+pqc = ["dep:ml-dsa", "dep:slh-dsa", "certval/pqc"]
 
 [dependencies]
 # Certificate vetting: path building, validation, and revocation checked against what the
@@ -57,6 +57,8 @@ rsa = { version = "=0.10.0-rc.21", default-features = false, features = ["encodi
 sha1 = { version = "0.11.0", default-features = false, features = ["oid"] }
 sha2 = { version = "0.11.0", default-features = false, features = ["oid"] }
 ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "zeroize"], optional = true }
+# The version certval pins, so that one copy is built.
+slh-dsa = { version = "=0.2.0-rc.5", default-features = false, features = ["alloc", "zeroize"], optional = true }
 # The Signer trait, for SignerCredential, which adapts any signer that knows its algorithm.
 signature = { version = "3.0.0", features = ["alloc"] }
 # Constant-time examination of PKCS #1 v1.5 padding after a raw RSA decryption.

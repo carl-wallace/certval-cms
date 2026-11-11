@@ -1333,6 +1333,134 @@ fn an_openssl_ml_dsa_key_signs_and_openssl_verifies() {
     assert_eq!(output.stdout, MESSAGE);
 }
 
+// ---- SLH-DSA
+
+/// A certificate and PKCS #8 key for a new SLH-DSA key with parameter set `P`.
+#[cfg(feature = "pqc")]
+fn slh_dsa_signatory<P: slh_dsa::ParameterSet>(ca: &Ca, serial: u8) -> Signatory {
+    let key = slh_dsa::SigningKey::<P>::new(&mut rng());
+    let public: &slh_dsa::VerifyingKey<P> = key.as_ref();
+    let spki = public.to_public_key_der().unwrap();
+    Signatory {
+        cert: ca.issue(
+            spki.as_bytes(),
+            serial,
+            vec![key_usage(KeyUsages::DigitalSignature)],
+            day(),
+        ),
+        pkcs8: key.to_pkcs8_der().unwrap().as_bytes().to_vec(),
+    }
+}
+
+/// RFC 9814: each SHA2 SLH-DSA parameter set signs with the digest its table pairs it with by
+/// default, and a digest shorter than twice the size of its tree's hash is refused. The fast
+/// parameter sets stand for the small ones, which differ only in speed and signature size.
+#[cfg(feature = "pqc")]
+#[test]
+fn slh_dsa_with_each_sha2_size() {
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let cases = [
+        (
+            slh_dsa_signatory::<slh_dsa::Sha2_128f>(&ca, 36),
+            DigestAlgorithm::Sha256,
+            None,
+        ),
+        (
+            slh_dsa_signatory::<slh_dsa::Sha2_192f>(&ca, 37),
+            DigestAlgorithm::Sha512,
+            Some(DigestAlgorithm::Sha256),
+        ),
+        (
+            slh_dsa_signatory::<slh_dsa::Sha2_256f>(&ca, 38),
+            DigestAlgorithm::Sha512,
+            Some(DigestAlgorithm::Sha384),
+        ),
+    ];
+    for (signatory, default, too_short) in cases {
+        let credential = signatory.credential();
+        let name = format!(
+            "{:?}",
+            signatory
+                .cert
+                .tbs_certificate()
+                .subject_public_key_info()
+                .algorithm
+                .oid
+        );
+        let ci = sign(&env, Signer::explicit(&credential));
+        assert_eq!(signer_digest_algorithms(&ci), vec![default.oid()], "{name}");
+        assert_verifies_vetted(&env, &ci, &name);
+        if let Some(too_short) = too_short {
+            let result = SignedDataBuilder::new(MESSAGE)
+                .add_signer(Signer::explicit(&credential).digest(too_short))
+                .build(&env);
+            assert!(matches!(result, Err(Error::InvalidInput(_))), "{name}");
+        }
+    }
+}
+
+/// An SLH-DSA key OpenSSL generated signs here, and OpenSSL verifies the message.
+#[cfg(feature = "pqc")]
+#[test]
+fn an_openssl_slh_dsa_key_signs_and_openssl_verifies() {
+    let Some(openssl) = openssl() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("key.der");
+    let status = Command::new(&openssl)
+        .args([
+            "genpkey",
+            "-algorithm",
+            "SLH-DSA-SHA2-128f",
+            "-outform",
+            "DER",
+            "-out",
+        ])
+        .arg(&key_path)
+        .status()
+        .unwrap();
+    if !status.success() {
+        eprintln!("skipped: {openssl} has no SLH-DSA");
+        return;
+    }
+    let output = Command::new(&openssl)
+        .args([
+            "pkey", "-inform", "DER", "-pubout", "-outform", "DER", "-in",
+        ])
+        .arg(&key_path)
+        .output()
+        .unwrap();
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let cert = ca.issue(
+        &output.stdout,
+        39,
+        vec![key_usage(KeyUsages::DigitalSignature)],
+        day(),
+    );
+    let credential =
+        SoftwareSigningKey::from_pkcs8_der(cert, &std::fs::read(&key_path).unwrap()).unwrap();
+    let ci = sign(&env, Signer::explicit(&credential));
+
+    let (ca_path, signed_path) = (dir.path().join("ca.pem"), dir.path().join("signed.der"));
+    std::fs::write(&ca_path, pem(&ca.cert)).unwrap();
+    std::fs::write(&signed_path, ci.to_der().unwrap()).unwrap();
+    let output = Command::new(&openssl)
+        .args(["cms", "-verify", "-binary", "-inform", "DER", "-in"])
+        .arg(&signed_path)
+        .arg("-CAfile")
+        .arg(&ca_path)
+        .args(["-purpose", "any"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, MESSAGE);
+}
+
 // ---- signing credentials found by email address and subject
 
 /// A person's encryption and signature credentials and a credential with no key usage extension,

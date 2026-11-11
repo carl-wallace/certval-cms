@@ -7,6 +7,11 @@ use aes::{Aes128, Aes192, Aes256};
 use aes_kw::{AesKw, KeyInit};
 #[cfg(feature = "pqc")]
 use const_oid::db::fips204::{ID_ML_DSA_44, ID_ML_DSA_65, ID_ML_DSA_87};
+#[cfg(feature = "pqc")]
+use const_oid::db::fips205::{
+    ID_SLH_DSA_SHA_2_128_F, ID_SLH_DSA_SHA_2_128_S, ID_SLH_DSA_SHA_2_192_F, ID_SLH_DSA_SHA_2_192_S,
+    ID_SLH_DSA_SHA_2_256_F, ID_SLH_DSA_SHA_2_256_S,
+};
 use const_oid::{
     db::{
         fips203::{ID_ALG_ML_KEM_1024, ID_ALG_ML_KEM_512, ID_ALG_ML_KEM_768},
@@ -633,6 +638,18 @@ enum SigningKeyMaterial {
     MlDsa65(Box<ml_dsa::ExpandedSigningKey<ml_dsa::MlDsa65>>),
     #[cfg(feature = "pqc")]
     MlDsa87(Box<ml_dsa::ExpandedSigningKey<ml_dsa::MlDsa87>>),
+    #[cfg(feature = "pqc")]
+    SlhDsaSha2128s(slh_dsa::SigningKey<slh_dsa::Sha2_128s>),
+    #[cfg(feature = "pqc")]
+    SlhDsaSha2128f(slh_dsa::SigningKey<slh_dsa::Sha2_128f>),
+    #[cfg(feature = "pqc")]
+    SlhDsaSha2192s(slh_dsa::SigningKey<slh_dsa::Sha2_192s>),
+    #[cfg(feature = "pqc")]
+    SlhDsaSha2192f(slh_dsa::SigningKey<slh_dsa::Sha2_192f>),
+    #[cfg(feature = "pqc")]
+    SlhDsaSha2256s(slh_dsa::SigningKey<slh_dsa::Sha2_256s>),
+    #[cfg(feature = "pqc")]
+    SlhDsaSha2256f(slh_dsa::SigningKey<slh_dsa::Sha2_256f>),
 }
 
 /// The kind of key, not the key.
@@ -649,6 +666,18 @@ impl core::fmt::Debug for SigningKeyMaterial {
             SigningKeyMaterial::MlDsa65(_) => "MlDsa65",
             #[cfg(feature = "pqc")]
             SigningKeyMaterial::MlDsa87(_) => "MlDsa87",
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2128s(_) => "SlhDsaSha2128s",
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2128f(_) => "SlhDsaSha2128f",
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2192s(_) => "SlhDsaSha2192s",
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2192f(_) => "SlhDsaSha2192f",
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2256s(_) => "SlhDsaSha2256s",
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2256f(_) => "SlhDsaSha2256f",
         })
     }
 }
@@ -726,6 +755,47 @@ fn ml_dsa_sign<P: ml_dsa::MlDsaParams>(
     Ok(signature.encode().to_vec())
 }
 
+/// Decodes an RFC 9814 SLH-DSA private key, which a PKCS #8 privateKey carries with no further
+/// encoding.
+#[cfg(feature = "pqc")]
+fn slh_dsa_key<P: slh_dsa::ParameterSet>(private_key: &[u8]) -> Result<slh_dsa::SigningKey<P>> {
+    slh_dsa::SigningKey::<P>::try_from(private_key)
+        .map_err(|_| Error::InvalidInput(String::from("an SLH-DSA private key malformed")))
+}
+
+/// The public key of an SLH-DSA signing key, as a certificate would carry it.
+#[cfg(feature = "pqc")]
+fn slh_dsa_public_key<P: slh_dsa::ParameterSet>(
+    oid: ObjectIdentifier,
+    key: &slh_dsa::SigningKey<P>,
+) -> Result<SubjectPublicKeyInfoOwned> {
+    let public: &slh_dsa::VerifyingKey<P> = key.as_ref();
+    Ok(SubjectPublicKeyInfoOwned {
+        algorithm: AlgorithmIdentifierOwned {
+            oid,
+            parameters: None,
+        },
+        subject_public_key: der::asn1::BitString::from_bytes(&public.to_bytes())?,
+    })
+}
+
+/// Signs `message` with pure SLH-DSA and an empty context string, as a certificate or CMS
+/// signature is made, if `alg` is the key's algorithm with parameters absent.
+#[cfg(feature = "pqc")]
+fn slh_dsa_sign<P: slh_dsa::ParameterSet>(
+    key: &slh_dsa::SigningKey<P>,
+    key_oid: ObjectIdentifier,
+    alg: &AlgorithmIdentifierOwned,
+    message: &[u8],
+) -> Result<Vec<u8>> {
+    use slh_dsa::signature::Signer;
+    if alg.oid != key_oid || alg.parameters.is_some() {
+        return Err(Error::Unrecognized);
+    }
+    let signature = key.try_sign(message).map_err(crypto)?;
+    Ok(signature.to_vec())
+}
+
 /// Signs the digest of `message` with an ECDSA key on `$curve`, as a DER-encoded signature. The
 /// signature algorithm's object identifier names the digest.
 macro_rules! ecdsa_sign {
@@ -764,7 +834,8 @@ impl core::fmt::Debug for SoftwareKey {
 
 impl SoftwareKey {
     /// A key for the PKCS #8 (RFC 5958) private key `der`: RSA, EC on P-256, P-384 or P-521, or
-    /// with `pqc`, ML-DSA in any of RFC 9881's three forms.
+    /// with `pqc`, ML-DSA in any of RFC 9881's three forms or SLH-DSA with a SHA2 parameter set
+    /// (RFC 9814).
     pub fn from_pkcs8_der(der: &[u8]) -> Result<Self> {
         let info = PrivateKeyInfoRef::from_der(der)?;
         let key = match info.algorithm.oid {
@@ -803,6 +874,30 @@ impl SoftwareKey {
                 ml_dsa::MlDsa87,
                 info.private_key.as_bytes()
             ))),
+            #[cfg(feature = "pqc")]
+            ID_SLH_DSA_SHA_2_128_S => {
+                SigningKeyMaterial::SlhDsaSha2128s(slh_dsa_key(info.private_key.as_bytes())?)
+            }
+            #[cfg(feature = "pqc")]
+            ID_SLH_DSA_SHA_2_128_F => {
+                SigningKeyMaterial::SlhDsaSha2128f(slh_dsa_key(info.private_key.as_bytes())?)
+            }
+            #[cfg(feature = "pqc")]
+            ID_SLH_DSA_SHA_2_192_S => {
+                SigningKeyMaterial::SlhDsaSha2192s(slh_dsa_key(info.private_key.as_bytes())?)
+            }
+            #[cfg(feature = "pqc")]
+            ID_SLH_DSA_SHA_2_192_F => {
+                SigningKeyMaterial::SlhDsaSha2192f(slh_dsa_key(info.private_key.as_bytes())?)
+            }
+            #[cfg(feature = "pqc")]
+            ID_SLH_DSA_SHA_2_256_S => {
+                SigningKeyMaterial::SlhDsaSha2256s(slh_dsa_key(info.private_key.as_bytes())?)
+            }
+            #[cfg(feature = "pqc")]
+            ID_SLH_DSA_SHA_2_256_F => {
+                SigningKeyMaterial::SlhDsaSha2256f(slh_dsa_key(info.private_key.as_bytes())?)
+            }
             _ => return Err(Error::Unrecognized),
         };
         let from_der = |der: spki::Result<spki::Document>| -> Result<SubjectPublicKeyInfoOwned> {
@@ -827,6 +922,18 @@ impl SoftwareKey {
             SigningKeyMaterial::MlDsa65(k) => ml_dsa_public_key(ID_ML_DSA_65, k)?,
             #[cfg(feature = "pqc")]
             SigningKeyMaterial::MlDsa87(k) => ml_dsa_public_key(ID_ML_DSA_87, k)?,
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2128s(k) => slh_dsa_public_key(ID_SLH_DSA_SHA_2_128_S, k)?,
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2128f(k) => slh_dsa_public_key(ID_SLH_DSA_SHA_2_128_F, k)?,
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2192s(k) => slh_dsa_public_key(ID_SLH_DSA_SHA_2_192_S, k)?,
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2192f(k) => slh_dsa_public_key(ID_SLH_DSA_SHA_2_192_F, k)?,
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2256s(k) => slh_dsa_public_key(ID_SLH_DSA_SHA_2_256_S, k)?,
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2256f(k) => slh_dsa_public_key(ID_SLH_DSA_SHA_2_256_F, k)?,
         };
         Ok(Self {
             public_key: public,
@@ -853,6 +960,30 @@ impl SoftwareKey {
             SigningKeyMaterial::MlDsa65(key) => ml_dsa_sign(key, ID_ML_DSA_65, alg, message),
             #[cfg(feature = "pqc")]
             SigningKeyMaterial::MlDsa87(key) => ml_dsa_sign(key, ID_ML_DSA_87, alg, message),
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2128s(key) => {
+                slh_dsa_sign(key, ID_SLH_DSA_SHA_2_128_S, alg, message)
+            }
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2128f(key) => {
+                slh_dsa_sign(key, ID_SLH_DSA_SHA_2_128_F, alg, message)
+            }
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2192s(key) => {
+                slh_dsa_sign(key, ID_SLH_DSA_SHA_2_192_S, alg, message)
+            }
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2192f(key) => {
+                slh_dsa_sign(key, ID_SLH_DSA_SHA_2_192_F, alg, message)
+            }
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2256s(key) => {
+                slh_dsa_sign(key, ID_SLH_DSA_SHA_2_256_S, alg, message)
+            }
+            #[cfg(feature = "pqc")]
+            SigningKeyMaterial::SlhDsaSha2256f(key) => {
+                slh_dsa_sign(key, ID_SLH_DSA_SHA_2_256_F, alg, message)
+            }
         }
     }
 }
@@ -874,7 +1005,8 @@ impl SigningKey for SoftwareKey {
 
 /// A [`SigningCredential`] holding a private key in memory and signing with RustCrypto: RSA with
 /// PKCS #1 v1.5 or RSASSA-PSS, or ECDSA on P-256, P-384 or P-521, each with SHA-256, -384 or -512,
-/// and with `pqc`, ML-DSA. A [`SoftwareKey`] with its certificate.
+/// and with `pqc`, ML-DSA and SLH-DSA with a SHA2 parameter set. A [`SoftwareKey`] with its
+/// certificate.
 pub struct SoftwareSigningKey {
     certificate: Certificate,
     key: SoftwareKey,

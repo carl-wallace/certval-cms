@@ -27,6 +27,7 @@ with no certificate yet, such as `SoftwareKey`, implements it alone.
 Certificates are vetted when settings are given, signers' through the CA certificates a message
 contains when the `PkiEnvironment` lacks a path, and the outcome is reported (`Vetting`).
 `unwrap_content_info` processes nested messages. Features `rsa` and `pqc` turn on certval's software
-RSA and post-quantum verification, and `pqc` ML-DSA signing. The crate reuses `cms`'s ASN.1 types and
+RSA and post-quantum verification, and `pqc` ML-DSA and SLH-DSA (SHA2 parameter sets) signing. The
+crate reuses `cms`'s ASN.1 types and
 defines its own `RecipientInfoBuilder`; it and its dependencies are `no_std` with `alloc`, given a
 `getrandom` backend. MSRV 1.89.
