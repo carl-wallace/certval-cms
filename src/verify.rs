@@ -307,8 +307,12 @@ impl CmsEnvironment {
             e => Error::Certval(e),
         })?;
 
-        let (vetting, message_ca_certificates) =
-            self.vet_with_candidates(&certificate, KeyUse::Signing, settings, message_certs)?;
+        let (vetting, message_ca_certificates) = match settings {
+            Some(settings) => {
+                self.vet_with_candidates(&certificate, KeyUse::Signing, settings, message_certs)?
+            }
+            None => (Vetting::NotPerformed, vec![]),
+        };
         Ok(VerifiedSigner {
             sid: signer.sid.clone(),
             certificate,

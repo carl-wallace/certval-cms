@@ -196,7 +196,10 @@ impl<'e, R: ?Sized> KeyTransRecipient<'e, R> {
         settings: Option<&CertificationPathSettings>,
         alg: KeyTransportAlgorithm,
     ) -> Result<Self> {
-        let vetting = env.vet_certificate(cert, KeyUse::KeyTransport, settings)?;
+        let vetting = match settings {
+            Some(settings) => env.vet_certificate(cert, KeyUse::KeyTransport, settings)?,
+            None => Vetting::NotPerformed,
+        };
         let mut recipient = Self::new(
             env,
             recipient_identifier(cert)?,
@@ -302,7 +305,10 @@ impl<'e, R: ?Sized> KeyAgreeRecipient<'e, R> {
         wrap: KeyWrapAlgorithm,
         ukm: Option<Vec<u8>>,
     ) -> Result<Self> {
-        let vetting = env.vet_certificate(cert, KeyUse::KeyAgreement, settings)?;
+        let vetting = match settings {
+            Some(settings) => env.vet_certificate(cert, KeyUse::KeyAgreement, settings)?,
+            None => Vetting::NotPerformed,
+        };
         let mut recipient = Self::new(
             env,
             recipient_identifier(cert)?,
@@ -419,7 +425,10 @@ impl<'e, R: ?Sized> KemRecipient<'e, R> {
         wrap: KeyWrapAlgorithm,
         ukm: Option<Vec<u8>>,
     ) -> Result<Self> {
-        let vetting = env.vet_certificate(cert, KeyUse::Kem, settings)?;
+        let vetting = match settings {
+            Some(settings) => env.vet_certificate(cert, KeyUse::Kem, settings)?,
+            None => Vetting::NotPerformed,
+        };
         let mut recipient = Self::new(
             env,
             recipient_identifier(cert)?,
