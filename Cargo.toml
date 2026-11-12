@@ -28,7 +28,7 @@ pqc = ["dep:ml-dsa", "dep:slh-dsa", "certval/pqc"]
 [dependencies]
 # Certificate vetting: path building, validation, and revocation checked against what the
 # PkiEnvironment holds. `revocation` adds that local check without std or networking.
-certval = { version = "0.2.0-rc.2", default-features = false, features = ["revocation"] }
+certval = { version = "0.2.0-rc.3", default-features = false, features = ["revocation"] }
 
 # The ASN.1 types, reused unchanged. The builders are this crate's, so that every cryptographic
 # operation can be routed to a provider, and so that nothing needs `std`.
@@ -79,7 +79,7 @@ rsa = { version = "0.10.0", features = ["pkcs1v15"] }
 tempfile = "3.27.0"
 # The vetting and SignedData tests' PkiEnvironment: std so that the time of interest defaults to
 # now, and certval's software RSA so that RSA signatures have an implementation to verify them.
-certval = { version = "0.2.0-rc.2", default-features = false, features = ["revocation", "rsa", "std"] }
+certval = { version = "0.2.0-rc.3", default-features = false, features = ["revocation", "rsa", "std"] }
 ml-dsa = { version = "0.1.1", features = ["pkcs8"] }
 # Certificates for the decryption and vetting tests' recipients, issued by a P-256 test CA.
 x509-cert = { version = "0.3.0", features = ["builder", "pem", "std"] }
@@ -88,8 +88,3 @@ der = { version = "0.8.3", features = ["flagset"] }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
-[patch.crates-io]
-# certval 0.2.0-rc.3 (SHAKE digests, rsa 0.10.0, cms 0.3.0-rc.2) is not yet on crates.io, so it comes
-# from rust-pki's main until it is published; then this line goes and the requirement moves to rc.3.
-certval = { git = "https://github.com/carl-wallace/rust-pki", branch = "main" }
