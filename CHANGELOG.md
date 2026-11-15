@@ -2,7 +2,7 @@
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), except that
 an increase to the minimum supported Rust version is not treated as a breaking change.
 
-## [0.1.0-rc.2] - unreleased
+## [0.1.0-rc.2] - 2026-11-15
 
 ### Changed
 - CMS messages are parsed as BER: SignedData, EnvelopedData, AuthEnvelopedData, KEM recipient info
