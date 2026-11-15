@@ -181,7 +181,7 @@ fn recipients(ri: &RecipientInfo) -> Result<Vec<(RecipientIdentifier, Result<Ope
             if ori.ori_type != ID_ORI_KEM {
                 return Ok(vec![]);
             }
-            let kemri = KemRecipientInfo::from_der(&ori.ori_value.to_der()?)?;
+            let kemri = KemRecipientInfo::from_ber(&ori.ori_value.to_der()?)?;
             let algs = KdfAlgorithm::from_algorithm_identifier(&kemri.kdf).and_then(|kdf| {
                 Ok((
                     kdf,
@@ -451,11 +451,11 @@ impl CmsEnvironment {
         let message = content_info.content.to_der()?;
         let (eci, recip_infos, auth_attrs, tag) = match content_info.content_type {
             ID_ENVELOPED_DATA => {
-                let ed = EnvelopedData::from_der(&message)?;
+                let ed = EnvelopedData::from_ber(&message)?;
                 (ed.encrypted_content, ed.recip_infos, None, None)
             }
             ID_CT_AUTH_ENVELOPED_DATA => {
-                let aed = AuthEnvelopedData::from_der(&message)?;
+                let aed = AuthEnvelopedData::from_ber(&message)?;
                 let tag = aed.mac.as_bytes().to_vec();
                 (
                     aed.auth_encrypted_content_info,

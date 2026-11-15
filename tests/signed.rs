@@ -1577,3 +1577,43 @@ fn a_signer_found_by_subject_signs() {
         Err(Error::NoMatchingSigner)
     ));
 }
+
+/// `ci`, a SignedData, as BER: each constructed value from the ContentInfo down to the
+/// EncapsulatedContentInfo has an indefinite length, and eContent is a constructed OCTET STRING of
+/// two segments, as Bouncy Castle and `openssl cms -stream` write it.
+fn ber(ci: &ContentInfo) -> Vec<u8> {
+    let sd = SignedData::from_der(&ci.content.to_der().unwrap()).unwrap();
+    let (first, second) = MESSAGE.split_at(MESSAGE.len() / 2);
+    let mut out = vec![0x30, 0x80];
+    out.extend(ci.content_type.to_der().unwrap());
+    out.extend([0xa0, 0x80, 0x30, 0x80]);
+    out.extend(sd.version.to_der().unwrap());
+    out.extend(sd.digest_algorithms.to_der().unwrap());
+    out.extend([0x30, 0x80]);
+    out.extend(sd.encap_content_info.econtent_type.to_der().unwrap());
+    out.extend([0xa0, 0x80, 0x24, 0x80]);
+    for segment in [first, second] {
+        out.extend(OctetString::new(segment).unwrap().to_der().unwrap());
+    }
+    // Ends eContent's OCTET STRING, its [0] and the EncapsulatedContentInfo.
+    out.extend([0; 6]);
+    let mut certificates = sd.certificates.unwrap().to_der().unwrap();
+    // [0] IMPLICIT in place of SET OF.
+    certificates[0] = 0xa0;
+    out.extend(certificates);
+    out.extend(sd.signer_infos.to_der().unwrap());
+    // Ends the SignedData, its [0] and the ContentInfo.
+    out.extend([0; 6]);
+    out
+}
+
+#[test]
+fn a_ber_message_with_a_constructed_econtent_verifies() {
+    let ca = Ca::new("CN=test CA");
+    let env = environment(&ca, &[]);
+    let signatory = rsa_signatory(&ca, 2);
+    let credential = signatory.credential();
+    let ber = ber(&sign(&env, Signer::explicit(&credential)));
+    assert!(ContentInfo::from_der(&ber).is_err());
+    assert_verifies_vetted(&env, &ContentInfo::from_ber(&ber).unwrap(), "BER");
+}

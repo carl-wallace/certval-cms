@@ -11,8 +11,13 @@ use alloc::{boxed::Box, format, string::String, vec, vec::Vec};
 use certval::{CertificationPathSettings, PkiEnvironment};
 use cms::{
     cert::CertificateChoices,
+    content_info::CmsVersion,
     content_info::ContentInfo,
-    signed_data::{SignedAttributes, SignedData, SignerIdentifier, SignerInfo},
+    revocation::RevocationInfoChoices,
+    signed_data::{
+        CertificateSet, DigestAlgorithmIdentifiers, SignedAttributes, SignedData, SignerIdentifier,
+        SignerInfo, SignerInfos,
+    },
 };
 use const_oid::{
     db::{
@@ -29,7 +34,7 @@ use const_oid::{
 };
 use der::{
     asn1::{Any, BitString, OctetString},
-    Decode, Encode,
+    Decode, Encode, Sequence,
 };
 use spki::AlgorithmIdentifierOwned;
 use x509_cert::Certificate;
@@ -115,7 +120,40 @@ fn signed_data(content_info: &ContentInfo) -> Result<SignedData> {
             content_info.content_type
         )));
     }
-    Ok(SignedData::from_der(&content_info.content.to_der()?)?)
+    Ok(SignedData::from_ber(&content_info.content.to_der()?)?)
+}
+
+/// SignedData as `cms` defines it, except that eContent is decoded as the OCTET STRING it is.
+/// Under BER, eContent may be a constructed OCTET STRING; `cms` holds eContent as an `Any`, which
+/// drops the constructed bit and keeps the segments' encodings as the content octets, where
+/// decoding it as an `OctetString` joins the segments.
+#[derive(Sequence)]
+struct SignedDataContent {
+    _version: CmsVersion,
+    _digest_algorithms: DigestAlgorithmIdentifiers,
+    encap_content_info: EncapsulatedContent,
+    #[asn1(context_specific = "0", tag_mode = "IMPLICIT", optional = "true")]
+    _certificates: Option<CertificateSet>,
+    #[asn1(context_specific = "1", tag_mode = "IMPLICIT", optional = "true")]
+    _crls: Option<RevocationInfoChoices>,
+    _signer_infos: SignerInfos,
+}
+
+/// EncapsulatedContentInfo, with eContent as an `OctetString`; see [`SignedDataContent`].
+#[derive(Sequence)]
+struct EncapsulatedContent {
+    _econtent_type: ObjectIdentifier,
+    #[asn1(context_specific = "0", tag_mode = "EXPLICIT", optional = "true")]
+    econtent: Option<OctetString>,
+}
+
+/// The eContent octets of the SignedData in `content_info`, or `None` when the content is detached.
+fn econtent(content_info: &ContentInfo) -> Result<Option<Vec<u8>>> {
+    let content = SignedDataContent::from_ber(&content_info.content.to_der()?)?;
+    Ok(content
+        .encap_content_info
+        .econtent
+        .map(|econtent| econtent.as_bytes().to_vec()))
 }
 
 fn certificates(signed_data: &SignedData) -> Vec<Certificate> {
@@ -366,10 +404,8 @@ impl CmsEnvironment {
             )));
         }
         let content_type = signed_data.encap_content_info.econtent_type;
-        let content = match (&signed_data.encap_content_info.econtent, detached_content) {
-            (Some(econtent), None) => OctetString::from_der(&econtent.to_der()?)?
-                .as_bytes()
-                .to_vec(),
+        let content = match (econtent(content_info)?, detached_content) {
+            (Some(econtent), None) => econtent,
             (None, Some(content)) => content.to_vec(),
             (None, None) => {
                 return Err(Error::InvalidInput(String::from(

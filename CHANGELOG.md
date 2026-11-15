@@ -2,6 +2,14 @@
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), except that
 an increase to the minimum supported Rust version is not treated as a breaking change.
 
+## [0.1.0-rc.2] - unreleased
+
+### Changed
+- CMS messages are parsed as BER: SignedData, EnvelopedData, AuthEnvelopedData, KEM recipient info
+  and nested content may use indefinite lengths and constructed strings, as Bouncy Castle and
+  `openssl cms -stream` write them. A SignedData's eContent split into OCTET STRING segments is
+  joined before its digest is checked.
+
 ## [0.1.0-rc.1] - 2026-11-12
 
 Initial release. Builds, decrypts, signs and verifies EnvelopedData, AuthEnvelopedData and
