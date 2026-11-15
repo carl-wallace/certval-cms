@@ -91,7 +91,7 @@ impl CmsEnvironment {
             // by the enclosing layer, so it is wrapped back into a ContentInfo to process.
             current = ContentInfo {
                 content_type,
-                content: Any::from_der(&content)?,
+                content: Any::from_ber(&content)?,
             };
         }
         Err(Error::InvalidInput(String::from(
