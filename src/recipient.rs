@@ -1,6 +1,6 @@
 //! Recipients: key management for EnvelopedData and AuthEnvelopedData.
 //!
-//! Each recipient type here is a `cms` [`RecipientInfoBuilder`] whose cryptography goes through a
+//! Each recipient type here is a cms [`RecipientInfoBuilder`] whose cryptography goes through a
 //! [`CmsEnvironment`], so the content-encryption key is wrapped by the first registered
 //! implementation that performs the operation. The implementations are of three kinds, one per
 //! kind of recipient: [`EncryptKeyTransport`] (RSA), [`EncryptKeyAgreement`] (ECDH) and
@@ -8,11 +8,12 @@
 //! operation, so that a secret derived along the way, such as an ECDH shared secret or a
 //! key-encryption key, stays inside the implementation that derived it.
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 use core::marker::PhantomData;
 
 use certval::CertificationPathSettings;
 use cms::{
+    builder::{self, RecipientInfoBuilder, RecipientInfoType},
     cert::IssuerAndSerialNumber,
     content_info::CmsVersion,
     enveloped_data::{
@@ -34,6 +35,7 @@ use x509_cert::{ext::pkix::SubjectKeyIdentifier, Certificate};
 use crate::algorithms::{
     KdfAlgorithm, KeyAgreementAlgorithm, KeyTransportAlgorithm, KeyWrapAlgorithm,
 };
+use crate::encryptor::to_builder_error;
 use crate::environment::CmsEnvironment;
 use crate::error::Result;
 use crate::vetting::{KeyUse, Vetting};
@@ -111,34 +113,6 @@ pub fn recipient_identifier(cert: &Certificate) -> Result<RecipientIdentifier> {
 
 fn subject_public_key_info(cert: &Certificate) -> SubjectPublicKeyInfoOwned {
     cert.tbs_certificate().subject_public_key_info().clone()
-}
-
-/// One recipient's key management: builds the RecipientInfo carrying a content-encryption key to
-/// that recipient. This crate's [`KeyTransRecipient`], [`KeyAgreeRecipient`] and [`KemRecipient`]
-/// implement it with their cryptography going through a [`CmsEnvironment`]; a recipient whose key
-/// management lies elsewhere implements it too, and the builders take either.
-pub trait RecipientInfoBuilder {
-    /// The random number generator the builder is given.
-    type Rng: CryptoRng + ?Sized;
-
-    /// The RecipientInfo carrying `content_encryption_key` to this recipient.
-    fn build_with_rng(
-        &mut self,
-        content_encryption_key: &[u8],
-        rng: &mut Self::Rng,
-    ) -> Result<RecipientInfo>;
-}
-
-impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for Box<dyn RecipientInfoBuilder<Rng = R> + '_> {
-    type Rng = R;
-
-    fn build_with_rng(
-        &mut self,
-        content_encryption_key: &[u8],
-        rng: &mut R,
-    ) -> Result<RecipientInfo> {
-        (**self).build_with_rng(content_encryption_key, rng)
-    }
 }
 
 /// RFC 5652, section 6.2.1: a KeyTransRecipientInfo is version 0 with an issuer and serial
@@ -220,11 +194,25 @@ impl<'e, R: ?Sized> KeyTransRecipient<'e, R> {
 impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for KeyTransRecipient<'_, R> {
     type Rng = R;
 
+    fn recipient_info_type(&self) -> RecipientInfoType {
+        RecipientInfoType::Ktri
+    }
+
+    fn recipient_info_version(&self) -> CmsVersion {
+        key_trans_version(&self.rid)
+    }
+
     fn build_with_rng(
         &mut self,
         content_encryption_key: &[u8],
         _rng: &mut R,
-    ) -> Result<RecipientInfo> {
+    ) -> builder::Result<RecipientInfo> {
+        self.build(content_encryption_key).map_err(to_builder_error)
+    }
+}
+
+impl<R: ?Sized> KeyTransRecipient<'_, R> {
+    fn build(&self, content_encryption_key: &[u8]) -> Result<RecipientInfo> {
         let enc_key =
             self.env
                 .encrypt_key_transport(self.alg, &self.spki, content_encryption_key)?;
@@ -332,11 +320,26 @@ impl<'e, R: ?Sized> KeyAgreeRecipient<'e, R> {
 impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for KeyAgreeRecipient<'_, R> {
     type Rng = R;
 
+    fn recipient_info_type(&self) -> RecipientInfoType {
+        RecipientInfoType::Kari
+    }
+
+    /// RFC 5652, section 6.2.2: "version is the syntax version number. It MUST always be 3."
+    fn recipient_info_version(&self) -> CmsVersion {
+        CmsVersion::V3
+    }
+
     fn build_with_rng(
         &mut self,
         content_encryption_key: &[u8],
         _rng: &mut R,
-    ) -> Result<RecipientInfo> {
+    ) -> builder::Result<RecipientInfo> {
+        self.build(content_encryption_key).map_err(to_builder_error)
+    }
+}
+
+impl<R: ?Sized> KeyAgreeRecipient<'_, R> {
+    fn build(&self, content_encryption_key: &[u8]) -> Result<RecipientInfo> {
         let output = self.env.encrypt_key_agreement(
             self.alg,
             self.wrap,
@@ -453,11 +456,29 @@ impl<'e, R: ?Sized> KemRecipient<'e, R> {
 impl<R: CryptoRng + ?Sized> RecipientInfoBuilder for KemRecipient<'_, R> {
     type Rng = R;
 
+    /// A KEMRecipientInfo is sent as an OtherRecipientInfo (RFC 9629, section 3).
+    fn recipient_info_type(&self) -> RecipientInfoType {
+        RecipientInfoType::Ori
+    }
+
+    /// The KEMRecipientInfo's version, which RFC 9629, section 3, fixes at 0. An
+    /// OtherRecipientInfo has none of its own, and makes the EnvelopedData version 3 whatever this
+    /// says.
+    fn recipient_info_version(&self) -> CmsVersion {
+        CmsVersion::V0
+    }
+
     fn build_with_rng(
         &mut self,
         content_encryption_key: &[u8],
         _rng: &mut R,
-    ) -> Result<RecipientInfo> {
+    ) -> builder::Result<RecipientInfo> {
+        self.build(content_encryption_key).map_err(to_builder_error)
+    }
+}
+
+impl<R: ?Sized> KemRecipient<'_, R> {
+    fn build(&self, content_encryption_key: &[u8]) -> Result<RecipientInfo> {
         let output = self.env.encrypt_kem(
             self.kdf,
             self.wrap,

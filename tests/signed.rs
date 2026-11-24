@@ -1126,9 +1126,10 @@ fn a_signature_signer_signs_with_its_own_algorithm() {
 #[test]
 fn signed_and_enveloped_layers_are_unwrapped_in_either_order() {
     use certval_cms::{
-        ContentEncryptionAlgorithm, EnvelopedDataBuilder, KeyTransRecipient, KeyTransportAlgorithm,
-        Layer, SoftwareRecipientKey,
+        content_info, ContentEncryptionAlgorithm, KeyTransRecipient, KeyTransportAlgorithm, Layer,
+        SoftwareRecipientKey,
     };
+    use cms::builder::EnvelopedDataBuilder;
     let ca = Ca::new("CN=test CA");
     let env = environment(&ca, &[]);
     let signatory = rsa_signatory(&ca, 25);
@@ -1153,13 +1154,16 @@ fn signed_and_enveloped_layers_are_unwrapped_in_either_order() {
             KeyTransportAlgorithm::RsaOaepSha256,
         )
         .unwrap();
-        let mut builder =
-            EnvelopedDataBuilder::new(content, ContentEncryptionAlgorithm::Aes256Cbc).unwrap();
-        builder.content_type(content_type);
-        builder
-            .add_recipient(recipient)
-            .build_content_info(&env, &mut rng())
+        let encryptor = env.content_encryptor(ContentEncryptionAlgorithm::Aes256Cbc);
+        let enveloped_data = EnvelopedDataBuilder::new(None, content, encryptor, None)
             .unwrap()
+            .content_type(content_type)
+            .unwrap()
+            .add_recipient_info(recipient)
+            .unwrap()
+            .build_with_rng(&mut rng())
+            .unwrap();
+        content_info(const_oid::db::rfc5911::ID_ENVELOPED_DATA, &enveloped_data).unwrap()
     };
     let sign_as = |content: &[u8], content_type| {
         SignedDataBuilder::new(content)
@@ -1582,7 +1586,7 @@ fn a_signer_found_by_subject_signs() {
 /// EncapsulatedContentInfo has an indefinite length, and eContent is a constructed OCTET STRING of
 /// two segments, as Bouncy Castle and `openssl cms -stream` write it.
 fn ber(ci: &ContentInfo) -> Vec<u8> {
-    let sd = SignedData::from_der(&ci.content.to_der().unwrap()).unwrap();
+    let sd: SignedData = SignedData::from_der(&ci.content.to_der().unwrap()).unwrap();
     let (first, second) = MESSAGE.split_at(MESSAGE.len() / 2);
     let mut out = vec![0x30, 0x80];
     out.extend(ci.content_type.to_der().unwrap());

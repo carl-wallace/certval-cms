@@ -12,8 +12,9 @@ use crate::algorithms::{
     ContentEncryptionAlgorithm, KdfAlgorithm, KeyAgreementAlgorithm, KeyTransportAlgorithm,
     KeyWrapAlgorithm,
 };
-use crate::content::{decrypt_content_rust_crypto, encrypt_content_rust_crypto};
+use crate::content::{decrypt_content_rust_crypto, RustCryptoContentEncryption};
 
+use crate::encryptor::EnvironmentContentEncryptor;
 use crate::environment_traits::{
     ContentEncryptionOutput, DecryptContent, EncryptContent, EncryptKem, EncryptKeyAgreement,
     EncryptKeyTransport, KemOutput, KeyAgreeOutput, RecipientCertificateSource,
@@ -132,7 +133,7 @@ impl CmsEnvironment {
 
     /// Registers certval-cms's software implementations after anything already registered.
     pub fn populate_software(&mut self) {
-        self.add_encrypt_content_callback(encrypt_content_rust_crypto);
+        self.add_encrypt_content_callback(RustCryptoContentEncryption);
         self.add_decrypt_content_callback(decrypt_content_rust_crypto);
         self.add_encrypt_key_transport_callback(encrypt_key_transport_rust_crypto);
         self.add_encrypt_key_agreement_callback(encrypt_key_agreement_rust_crypto);
@@ -163,6 +164,31 @@ impl CmsEnvironment {
         first_answer(&self.encrypt_content_callbacks, |c| {
             c.encrypt_content(self, alg, plaintext, aad)
         })
+    }
+
+    /// Encrypts with `key` with the first registered implementation that does not decline. See
+    /// [`EncryptContent::encrypt_content_with_key`].
+    pub fn encrypt_content_with_key(
+        &self,
+        alg: ContentEncryptionAlgorithm,
+        key: &[u8],
+        plaintext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<ContentEncryptionOutput> {
+        first_answer(&self.encrypt_content_callbacks, |c| {
+            c.encrypt_content_with_key(self, alg, key, plaintext, aad)
+        })
+    }
+
+    /// A cms [`ContentEncryptor`](cms::builder::ContentEncryptor) for `alg` whose encryption goes
+    /// through this environment, for cms's `EnvelopedDataBuilder` and this crate's
+    /// [`AuthEnvelopedDataBuilder`](crate::AuthEnvelopedDataBuilder) and
+    /// [`EncryptedDataBuilder`](crate::EncryptedDataBuilder).
+    pub fn content_encryptor(
+        &self,
+        alg: ContentEncryptionAlgorithm,
+    ) -> EnvironmentContentEncryptor<'_> {
+        EnvironmentContentEncryptor::new(self, alg)
     }
 
     /// Registers a content decryption implementation after those already registered.

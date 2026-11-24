@@ -70,6 +70,22 @@ pub trait EncryptContent {
         plaintext: &[u8],
         aad: Option<&[u8]>,
     ) -> Result<ContentEncryptionOutput>;
+
+    /// As [`encrypt_content`](Self::encrypt_content), with `key` rather than a generated key, as
+    /// for EncryptedData, whose key the parties already share. The output's `key` is a copy of
+    /// `key`. Declined by default, and so by a bare function, so that an implementation whose keys
+    /// never leave its module need not take one.
+    fn encrypt_content_with_key(
+        &self,
+        env: &CmsEnvironment,
+        alg: ContentEncryptionAlgorithm,
+        key: &[u8],
+        plaintext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<ContentEncryptionOutput> {
+        let _ = (env, alg, key, plaintext, aad);
+        Err(Error::Unrecognized)
+    }
 }
 
 impl<F> EncryptContent for F
@@ -101,6 +117,17 @@ impl<T: EncryptContent + ?Sized> EncryptContent for Arc<T> {
         aad: Option<&[u8]>,
     ) -> Result<ContentEncryptionOutput> {
         (**self).encrypt_content(env, alg, plaintext, aad)
+    }
+
+    fn encrypt_content_with_key(
+        &self,
+        env: &CmsEnvironment,
+        alg: ContentEncryptionAlgorithm,
+        key: &[u8],
+        plaintext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<ContentEncryptionOutput> {
+        (**self).encrypt_content_with_key(env, alg, key, plaintext, aad)
     }
 }
 

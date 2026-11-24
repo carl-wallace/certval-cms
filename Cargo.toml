@@ -30,9 +30,10 @@ pqc = ["dep:ml-dsa", "dep:slh-dsa", "certval/pqc"]
 # PkiEnvironment holds. `revocation` adds that local check without std or networking.
 certval = { version = "0.2.0-rc.3", default-features = false, features = ["revocation"] }
 
-# The ASN.1 types, reused unchanged. The builders are this crate's, so that every cryptographic
-# operation can be routed to a provider, and so that nothing needs `std`.
-cms = "=0.3.0-rc.2"
+# The ASN.1 types, and the builders: cms's EnvelopedDataBuilder takes this crate's recipients and
+# content encryption through cms's RecipientInfoBuilder and ContentEncryptor traits, so that every
+# cryptographic operation can be routed to a provider. The builder feature does not need `std`.
+cms = { version = "=0.3.0-rc.2", features = ["builder"] }
 const-oid = { version = "0.10.2", features = ["db"] }
 der = { version = "0.8.3", features = ["alloc", "ber", "derive", "oid"] }
 spki = "0.8.0"
@@ -68,9 +69,6 @@ rand_core = "0.10.1"
 log = "0.4.35"
 
 [dev-dependencies]
-# The tests decrypt what is built, with RustCrypto and with the openssl command. cms's own key
-# transport recipient builder stands in for a recipient whose key management lies elsewhere.
-cms = { version = "=0.3.0-rc.2", features = ["builder"] }
 ml-kem = { version = "0.3.3", features = ["pkcs8", "pem"] }
 p256 = { version = "0.14.0", features = ["ecdh", "ecdsa", "pem"] }
 p384 = { version = "0.14.0", features = ["ecdh", "pem"] }
@@ -88,3 +86,9 @@ der = { version = "0.8.3", features = ["flagset"] }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+# Testing against the open RustCrypto/formats PR, whose branch this one tracks: cms from the PR branch,
+# and the x509-cert that cms needs from the same branch. Remove when cms is released with the change.
+[patch.crates-io]
+cms = { git = "https://github.com/carl-wallace/formats", branch = "pluggable_content_encryption" }
+x509-cert = { git = "https://github.com/carl-wallace/formats", branch = "pluggable_content_encryption" }

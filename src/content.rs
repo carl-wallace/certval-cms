@@ -29,7 +29,7 @@ use zeroize::Zeroizing;
 
 use crate::algorithms::ContentEncryptionAlgorithm;
 use crate::environment::CmsEnvironment;
-use crate::environment_traits::ContentEncryptionOutput;
+use crate::environment_traits::{ContentEncryptionOutput, EncryptContent};
 use crate::error::{Error, Result};
 
 /// Length in octets of the GCM nonce generated for a message, the length RFC 5084 recommends.
@@ -74,12 +74,71 @@ pub fn encrypt_content_rust_crypto(
     plaintext: &[u8],
     aad: Option<&[u8]>,
 ) -> Result<ContentEncryptionOutput> {
+    rust_crypto_encrypt(alg, None, plaintext, aad)
+}
+
+/// As [`encrypt_content_rust_crypto`], with `key` rather than a generated key.
+pub fn encrypt_content_with_key_rust_crypto(
+    _env: &CmsEnvironment,
+    alg: ContentEncryptionAlgorithm,
+    key: &[u8],
+    plaintext: &[u8],
+    aad: Option<&[u8]>,
+) -> Result<ContentEncryptionOutput> {
+    rust_crypto_encrypt(alg, Some(key), plaintext, aad)
+}
+
+/// RustCrypto's content encryption as an [`EncryptContent`](crate::EncryptContent) implementation
+/// that also takes a given key: [`encrypt_content_rust_crypto`] and
+/// [`encrypt_content_with_key_rust_crypto`]. [`CmsEnvironment::populate_software`] registers it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RustCryptoContentEncryption;
+
+impl EncryptContent for RustCryptoContentEncryption {
+    fn encrypt_content(
+        &self,
+        env: &CmsEnvironment,
+        alg: ContentEncryptionAlgorithm,
+        plaintext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<ContentEncryptionOutput> {
+        encrypt_content_rust_crypto(env, alg, plaintext, aad)
+    }
+
+    fn encrypt_content_with_key(
+        &self,
+        env: &CmsEnvironment,
+        alg: ContentEncryptionAlgorithm,
+        key: &[u8],
+        plaintext: &[u8],
+        aad: Option<&[u8]>,
+    ) -> Result<ContentEncryptionOutput> {
+        encrypt_content_with_key_rust_crypto(env, alg, key, plaintext, aad)
+    }
+}
+
+fn rust_crypto_encrypt(
+    alg: ContentEncryptionAlgorithm,
+    key: Option<&[u8]>,
+    plaintext: &[u8],
+    aad: Option<&[u8]>,
+) -> Result<ContentEncryptionOutput> {
     if aad.is_some() && !alg.is_authenticated() {
         return Err(Error::InvalidInput(String::from(
             "associated data given for an algorithm that does not authenticate",
         )));
     }
-    let key = random(alg.key_len())?;
+    let key = match key {
+        Some(key) if key.len() == alg.key_len() => Zeroizing::new(key.to_vec()),
+        Some(key) => {
+            return Err(Error::InvalidInput(format!(
+                "a key of {} octets for {alg:?}, which takes {}",
+                key.len(),
+                alg.key_len()
+            )))
+        }
+        None => random(alg.key_len())?,
+    };
     match alg {
         ContentEncryptionAlgorithm::Aes128Cbc => cbc_encrypt::<Aes128>(alg, key, plaintext),
         ContentEncryptionAlgorithm::Aes192Cbc => cbc_encrypt::<Aes192>(alg, key, plaintext),

@@ -2,6 +2,25 @@
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), except that
 an increase to the minimum supported Rust version is not treated as a breaking change.
 
+## [Unreleased]
+
+### Changed
+- EnvelopedData is built with cms's `EnvelopedDataBuilder`, which takes this crate's recipients and
+  content encryption through cms's `RecipientInfoBuilder` and `ContentEncryptor` traits. This
+  crate's `EnvelopedDataBuilder` and `RecipientInfoBuilder` are removed; `KeyTransRecipient`,
+  `KeyAgreeRecipient` and `KemRecipient` implement cms's trait, and
+  `CmsEnvironment::content_encryptor` gives a `ContentEncryptor` whose encryption goes through the
+  environment (`EnvironmentContentEncryptor`). `content_info` wraps what a builder makes.
+- `AuthEnvelopedDataBuilder` takes a `ContentEncryptor` rather than an algorithm and an environment.
+  An algorithm that does not authenticate is refused when building.
+
+### Added
+- `EncryptedDataBuilder` and `CmsEnvironment::decrypt_encrypted_data`: EncryptedData under a key the
+  parties share.
+- `EncryptContent::encrypt_content_with_key`, declined by default, and
+  `CmsEnvironment::encrypt_content_with_key`. `RustCryptoContentEncryption`, which
+  `populate_software` now registers, implements it with `encrypt_content_with_key_rust_crypto`.
+
 ## [0.1.0-rc.2] - 2026-11-15
 
 ### Changed

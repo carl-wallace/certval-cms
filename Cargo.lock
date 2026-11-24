@@ -54,6 +54,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a813d97aa3fa6fa23ad0f4ea5bf6c13bfe2404c02ce0552ed47cd9962ae9b159"
 dependencies = [
  "digest",
+ "kdf",
 ]
 
 [[package]]
@@ -255,8 +256,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 [[package]]
 name = "cms"
 version = "0.3.0-rc.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d089eddc8a5c984d82fcf1427367a6fa0d019d5af04b6e3197e86c8989533b8d"
+source = "git+https://github.com/carl-wallace/formats?branch=pluggable_content_encryption#6a35094ac7ae2d0914a2fd91f61c6ff3352981f6"
 dependencies = [
  "aes",
  "aes-kw",
@@ -267,6 +267,8 @@ dependencies = [
  "der",
  "digest",
  "elliptic-curve",
+ "kdf",
+ "pkcs1",
  "rsa",
  "sha1",
  "sha2",
@@ -567,6 +569,12 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "kdf"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb9652713a34bd7a2f539adcab233163943bed9c685970db62eb3cb264d625a1"
 
 [[package]]
 name = "keccak"
@@ -1220,9 +1228,8 @@ dependencies = [
 
 [[package]]
 name = "x509-cert"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "105ef4642d9cb137ef83d623d0e4bf08b8adf69e9918ca904a174adb6d3d038b"
+version = "0.3.1"
+source = "git+https://github.com/carl-wallace/formats?branch=pluggable_content_encryption#6a35094ac7ae2d0914a2fd91f61c6ff3352981f6"
 dependencies = [
  "const-oid",
  "der",

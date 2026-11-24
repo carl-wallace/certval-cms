@@ -12,14 +12,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use certval_cms::{
-    unpad_pkcs1v15, AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm,
-    CredentialOrigin, EnvelopedDataBuilder, Error, GcmParameters, KdfAlgorithm, KemRecipient,
+    content_info, unpad_pkcs1v15, AuthEnvelopedDataBuilder, CmsEnvironment,
+    ContentEncryptionAlgorithm, CredentialOrigin, Error, GcmParameters, KdfAlgorithm, KemRecipient,
     KeyAgreeRecipient, KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm,
-    KeyWrapAlgorithm, RecipientCredential, RecipientInfoBuilder, SingleRecipientCredential,
-    SoftwareRecipientKey,
+    KeyWrapAlgorithm, RecipientCredential, SingleRecipientCredential, SoftwareRecipientKey,
 };
 use cms::{
-    cert::x509::attr::Attribute, content_info::ContentInfo, enveloped_data::RecipientIdentifier,
+    builder::{EnvelopedDataBuilder, RecipientInfoBuilder},
+    cert::x509::attr::Attribute,
+    content_info::ContentInfo,
+    enveloped_data::RecipientIdentifier,
 };
 use const_oid::db::rfc5911::{ID_CONTENT_TYPE, ID_DATA, ID_ENVELOPED_DATA};
 use const_oid::db::rfc5912::ID_CE_SUBJECT_KEY_IDENTIFIER;
@@ -195,18 +197,23 @@ fn envelop<'e>(
     recipients: Vec<Box<dyn RecipientInfoBuilder<Rng = Rng> + 'e>>,
 ) -> ContentInfo {
     if alg.is_authenticated() {
-        let mut builder = AuthEnvelopedDataBuilder::new(MESSAGE, alg).unwrap();
+        let mut builder = AuthEnvelopedDataBuilder::new(MESSAGE, env.content_encryptor(alg));
         builder.auth_attrs(content_type_attrs());
         for r in recipients {
             builder.add_recipient(r);
         }
-        builder.build_content_info(env, &mut rng()).unwrap()
+        builder.build_content_info(&mut rng()).unwrap()
     } else {
-        let mut builder = EnvelopedDataBuilder::new(MESSAGE, alg).unwrap();
+        let mut builder =
+            EnvelopedDataBuilder::new(None, MESSAGE, env.content_encryptor(alg), None).unwrap();
         for r in recipients {
-            builder.add_recipient(r);
+            builder.add_recipient_info(r).unwrap();
         }
-        builder.build_content_info(env, &mut rng()).unwrap()
+        content_info(
+            ID_ENVELOPED_DATA,
+            &builder.build_with_rng(&mut rng()).unwrap(),
+        )
+        .unwrap()
     }
 }
 
@@ -348,7 +355,7 @@ fn an_originator_key_not_on_the_recipients_curve_is_refused() {
         vec![Box::new(r)],
     );
     let relabelled = |oid, parameters: Option<Any>| {
-        let mut ed = EnvelopedData::from_der(&ci.content.to_der().unwrap()).unwrap();
+        let mut ed: EnvelopedData = EnvelopedData::from_der(&ci.content.to_der().unwrap()).unwrap();
         let mut infos: Vec<_> = ed.recip_infos.0.iter().cloned().collect();
         let RecipientInfo::Kari(kari) = &mut infos[0] else {
             panic!("not key agreement");
@@ -705,7 +712,7 @@ fn a_changed_authenticated_attribute_fails_decryption() {
             KeyTransportAlgorithm::RsaOaepSha256,
         )],
     );
-    let mut aed =
+    let mut aed: cms::authenveloped_data::AuthEnvelopedData =
         cms::authenveloped_data::AuthEnvelopedData::from_der(&ci.content.to_der().unwrap())
             .unwrap();
     aed.auth_attrs = None;
@@ -734,7 +741,7 @@ fn a_tag_shorter_than_rfc_5084_allows_is_refused() {
             KeyTransportAlgorithm::RsaOaepSha256,
         )],
     );
-    let mut aed =
+    let mut aed: cms::authenveloped_data::AuthEnvelopedData =
         cms::authenveloped_data::AuthEnvelopedData::from_der(&ci.content.to_der().unwrap())
             .unwrap();
     let alg = &mut aed.auth_encrypted_content_info.content_enc_alg;
@@ -762,12 +769,14 @@ fn a_content_type_other_than_id_data_is_bound_by_an_authenticated_attribute() {
     let recipient = rsa_recipient(18, true);
     let credential = recipient.credential();
     let recipient_builder = || key_trans(&env, &recipient, KeyTransportAlgorithm::RsaOaepSha256);
-    let ci = AuthEnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes256Gcm)
-        .unwrap()
-        .content_type(ID_ENVELOPED_DATA)
-        .add_recipient(recipient_builder())
-        .build_content_info(&env, &mut rng())
-        .unwrap();
+    let ci = AuthEnvelopedDataBuilder::new(
+        MESSAGE,
+        env.content_encryptor(ContentEncryptionAlgorithm::Aes256Gcm),
+    )
+    .content_type(ID_ENVELOPED_DATA)
+    .add_recipient(recipient_builder())
+    .build_content_info(&mut rng())
+    .unwrap();
     let decrypted = env.decrypt_enveloped_data(&ci, Some(&credential)).unwrap();
     assert_eq!(decrypted.content_type, ID_ENVELOPED_DATA);
     let attrs = decrypted.auth_attrs.unwrap();
@@ -778,7 +787,7 @@ fn a_content_type_other_than_id_data_is_bound_by_an_authenticated_attribute() {
     );
 
     // The type relabelled after building no longer matches the attribute.
-    let mut aed =
+    let mut aed: cms::authenveloped_data::AuthEnvelopedData =
         cms::authenveloped_data::AuthEnvelopedData::from_der(&ci.content.to_der().unwrap())
             .unwrap();
     aed.auth_encrypted_content_info.content_type = ID_DATA;
@@ -804,14 +813,16 @@ fn a_content_type_other_than_id_data_is_bound_by_an_authenticated_attribute() {
     ));
 
     // An attribute the caller gives must agree with the type.
-    let mut builder =
-        AuthEnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes256Gcm).unwrap();
+    let mut builder = AuthEnvelopedDataBuilder::new(
+        MESSAGE,
+        env.content_encryptor(ContentEncryptionAlgorithm::Aes256Gcm),
+    );
     builder
         .content_type(ID_ENVELOPED_DATA)
         .auth_attrs(content_type_attrs())
         .add_recipient(recipient_builder());
     assert!(matches!(
-        builder.build_content_info(&env, &mut rng()),
+        builder.build_content_info(&mut rng()),
         Err(Error::InvalidInput(_))
     ));
 }

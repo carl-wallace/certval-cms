@@ -26,9 +26,11 @@ through the registered sources, or passed to an operation directly.
 
 ```rust
 use certval_cms::{
-    CmsEnvironment, ContentEncryptionAlgorithm, EnvelopedDataBuilder, KeyTransRecipient,
+    content_info, CmsEnvironment, ContentEncryptionAlgorithm, KeyTransRecipient,
     KeyTransportAlgorithm, SignedDataBuilder, Signer, SignerPolicy,
 };
+use cms::builder::EnvelopedDataBuilder;
+use const_oid::db::rfc5911::ID_ENVELOPED_DATA;
 
 // Cryptographic operations are handled by providers in the order they are registered.
 // In some cases, a platform provider would be registered first, with a software implementation
@@ -46,9 +48,12 @@ let recipient = KeyTransRecipient::from_certificate(
     None,
     KeyTransportAlgorithm::RsaOaepSha256,
 )?;
-let content_info = EnvelopedDataBuilder::new(b"message", ContentEncryptionAlgorithm::Aes256Cbc)?
-    .add_recipient(recipient)
-    .build_content_info(&env, &mut rng)?;
+// cms's EnvelopedDataBuilder, with the content encrypted through the environment.
+let encryptor = env.content_encryptor(ContentEncryptionAlgorithm::Aes256Cbc);
+let enveloped_data = EnvelopedDataBuilder::new(None, b"message", encryptor, None)?
+    .add_recipient_info(recipient)?
+    .build_with_rng(&mut rng)?;
+let content_info = content_info(ID_ENVELOPED_DATA, &enveloped_data)?;
 
 // The recipient's private key is a credential, here passed directly; a registered source would
 // otherwise find it by the recipient identifier.
@@ -64,17 +69,14 @@ let verified =
 
 ## What is reused from the `cms` crate, and what is not
 
-The `cms` crate's builders do their cryptography in process with RustCrypto: its
-`EnvelopedDataBuilder` generates the content-encryption key and encrypts with AES-CBC only, its key
-transport recipient takes an `rsa` public key and does PKCS #1 v1.5 only, and its key agreement
-recipient is generic over RustCrypto curve, KDF and key wrap types. It has no AuthEnvelopedData or
-KEM recipient builder, and no decryption. Its one provider hook covers password recipients.
-
-This crate reuses `cms`'s ASN.1 types unchanged and builds everything else itself: content
-encryption, and the key transport, key agreement and KEM recipients, which implement this crate's
-one-method `RecipientInfoBuilder` with their cryptography going through the environment. A
-recipient whose key management lies elsewhere implements the same trait and is added the same way,
-reaching no plug point. Signing in `cms` is already pluggable through
+This crate reuses `cms`'s ASN.1 types unchanged, and its `EnvelopedDataBuilder`, through the traits
+that builder takes: content encryption is a cms `ContentEncryptor`, which
+`CmsEnvironment::content_encryptor` provides over the environment, and the key transport, key
+agreement and KEM recipients are cms `RecipientInfoBuilder`s whose cryptography goes through the
+environment. A recipient whose key management lies elsewhere, such as one of cms's own recipient
+builders, is added the same way, reaching no plug point. cms has no AuthEnvelopedData or
+EncryptedData builder and no decryption; this crate's `AuthEnvelopedDataBuilder` and
+`EncryptedDataBuilder` take the same traits. Signing in `cms` is already pluggable through
 `signature::Signer`, and `SignerCredential` adapts any such signer to this crate's signing.
 `CredentialSigner` goes the other way: it presents a `SigningKey` as a `signature::Signer`, with
 its public key as the verifying key, so that x509-cert's certificate, request and CRL builders and

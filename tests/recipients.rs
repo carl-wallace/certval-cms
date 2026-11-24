@@ -15,11 +15,12 @@ use aes::cipher::KeyInit;
 use aes_kw::AesKw;
 use cbc::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
 use certval_cms::{
-    CmsEnvironment, ContentEncryptionAlgorithm, EnvelopedDataBuilder, Error, KdfAlgorithm,
-    KemRecipient, KeyAgreeRecipient, KeyAgreementAlgorithm, KeyTransRecipient,
-    KeyTransportAlgorithm, KeyWrapAlgorithm, ID_ALG_HKDF_WITH_SHA256, ID_ALG_HKDF_WITH_SHA384,
+    content_info, CmsEnvironment, ContentEncryptionAlgorithm, Error, KdfAlgorithm, KemRecipient,
+    KeyAgreeRecipient, KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm,
+    KeyWrapAlgorithm, ID_ALG_HKDF_WITH_SHA256, ID_ALG_HKDF_WITH_SHA384,
 };
 use cms::{
+    builder::{EnvelopedDataBuilder, RecipientInfoBuilder},
     content_info::{CmsVersion, ContentInfo},
     enveloped_data::{
         EnvelopedData, OriginatorIdentifierOrKey, RecipientIdentifier, RecipientInfo,
@@ -72,15 +73,18 @@ fn spki(der: &[u8]) -> SubjectPublicKeyInfoOwned {
 }
 
 /// Encrypts MESSAGE with AES-256-CBC to one recipient.
-fn envelop(
-    env: &CmsEnvironment,
-    recipient: impl certval_cms::RecipientInfoBuilder<Rng = Rng>,
+fn envelop<'e>(
+    env: &'e CmsEnvironment,
+    recipient: impl RecipientInfoBuilder<Rng = Rng> + 'e,
 ) -> ContentInfo {
-    EnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes256Cbc)
+    let encryptor = env.content_encryptor(ContentEncryptionAlgorithm::Aes256Cbc);
+    let enveloped_data = EnvelopedDataBuilder::new(None, MESSAGE, encryptor, None)
         .unwrap()
-        .add_recipient(recipient)
-        .build_content_info(env, &mut rng())
+        .add_recipient_info(recipient)
         .unwrap()
+        .build_with_rng(&mut rng())
+        .unwrap();
+    content_info(const_oid::db::rfc5911::ID_ENVELOPED_DATA, &enveloped_data).unwrap()
 }
 
 fn enveloped_data(ci: &ContentInfo) -> EnvelopedData {
@@ -438,11 +442,17 @@ fn a_recipient_whose_key_no_implementation_takes_fails_to_build() {
         KeyWrapAlgorithm::Aes256,
         None,
     );
-    let built = EnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes256Cbc)
+    let encryptor = env.content_encryptor(ContentEncryptionAlgorithm::Aes256Cbc);
+    let built = EnvelopedDataBuilder::new(None, MESSAGE, encryptor, None)
         .unwrap()
-        .add_recipient(kari)
-        .build(&env, &mut rng());
-    assert!(matches!(built, Err(Error::Unrecognized)));
+        .add_recipient_info(kari)
+        .unwrap()
+        .build_with_rng(&mut rng());
+    // cms's builder error carries only a message, so the decline arrives as its text.
+    assert!(
+        matches!(&built, Err(cms::builder::Error::Builder(m)) if *m == Error::Unrecognized.to_string()),
+        "{built:?}"
+    );
 
     assert!(matches!(
         env.encrypt_kem(

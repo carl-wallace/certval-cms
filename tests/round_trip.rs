@@ -1,5 +1,6 @@
 //! Messages built here, decrypted again with RustCrypto: RSA key transport recipients from the `cms`
-//! crate, every content encryption algorithm, and authenticated attributes for AuthEnvelopedData.
+//! crate, every content encryption algorithm, and authenticated attributes for AuthEnvelopedData;
+//! and EncryptedData under a given key.
 //!
 //! With `CERTVAL_CMS_OPENSSL` set to an `openssl` command (OpenSSL 3), the same messages are also
 //! decrypted by `openssl cms -decrypt`, an implementation that shares no code with this crate.
@@ -16,18 +17,19 @@ use aes_gcm::{
 };
 use cbc::cipher::{block_padding::Pkcs7, BlockCipherDecrypt, BlockModeDecrypt, KeyIvInit};
 use certval_cms::{
-    AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm, ContentEncryptionOutput,
-    EnvelopedDataBuilder, Error, GcmParameters, RecipientInfoBuilder,
+    content_info, AuthEnvelopedDataBuilder, CmsEnvironment, ContentEncryptionAlgorithm,
+    ContentEncryptionOutput, EncryptedDataBuilder, Error, GcmParameters,
 };
 use cms::{
     authenveloped_data::AuthEnvelopedData,
-    builder::{KeyEncryptionInfo, KeyTransRecipientInfoBuilder},
+    builder::{EnvelopedDataBuilder, KeyEncryptionInfo, KeyTransRecipientInfoBuilder},
     cert::x509::attr::Attribute,
     content_info::{CmsVersion, ContentInfo},
+    encrypted_data::EncryptedData,
     enveloped_data::{EncryptedContentInfo, EnvelopedData, RecipientIdentifier, RecipientInfo},
 };
 use const_oid::db::rfc5911::{
-    ID_CONTENT_TYPE, ID_CT_AUTH_ENVELOPED_DATA, ID_DATA, ID_ENVELOPED_DATA,
+    ID_CONTENT_TYPE, ID_CT_AUTH_ENVELOPED_DATA, ID_DATA, ID_ENCRYPTED_DATA, ID_ENVELOPED_DATA,
 };
 use der::{
     asn1::{OctetString, SetOfVec},
@@ -77,21 +79,9 @@ fn rid() -> RecipientIdentifier {
 
 /// cms's own key transport recipient builder, standing in for a recipient whose key management
 /// lies outside the environment.
-struct FromCms(KeyTransRecipientInfoBuilder<Rng>);
-
-impl RecipientInfoBuilder for FromCms {
-    type Rng = Rng;
-    fn build_with_rng(&mut self, cek: &[u8], rng: &mut Rng) -> certval_cms::Result<RecipientInfo> {
-        cms::builder::RecipientInfoBuilder::build_with_rng(&mut self.0, cek, rng)
-            .map_err(|e| certval_cms::Error::Crypto(e.to_string()))
-    }
-}
-
-fn recipient(key: &RsaPrivateKey) -> FromCms {
-    FromCms(
-        KeyTransRecipientInfoBuilder::new(rid(), KeyEncryptionInfo::Rsa(RsaPublicKey::from(key)))
-            .unwrap(),
-    )
+fn recipient(key: &RsaPrivateKey) -> KeyTransRecipientInfoBuilder<Rng> {
+    KeyTransRecipientInfoBuilder::new(rid(), KeyEncryptionInfo::Rsa(RsaPublicKey::from(key)))
+        .unwrap()
 }
 
 /// The content-encryption key, unwrapped from the message's only recipient.
@@ -173,12 +163,20 @@ fn decrypt_auth_enveloped(key: &RsaPrivateKey, ci: &ContentInfo) -> Vec<u8> {
     }
 }
 
+fn enveloped_with(
+    env: &CmsEnvironment,
+    key: &RsaPrivateKey,
+    alg: ContentEncryptionAlgorithm,
+) -> Result<ContentInfo, Error> {
+    let enveloped_data =
+        EnvelopedDataBuilder::new(None, MESSAGE, env.content_encryptor(alg), None)?
+            .add_recipient_info(recipient(key))?
+            .build_with_rng(&mut rng())?;
+    content_info(ID_ENVELOPED_DATA, &enveloped_data)
+}
+
 fn enveloped(key: &RsaPrivateKey, alg: ContentEncryptionAlgorithm) -> ContentInfo {
-    EnvelopedDataBuilder::new(MESSAGE, alg)
-        .unwrap()
-        .add_recipient(recipient(key))
-        .build_content_info(&software(), &mut rng())
-        .unwrap()
+    enveloped_with(&software(), key, alg).unwrap()
 }
 
 fn content_type_attrs() -> SetOfVec<Attribute> {
@@ -199,13 +197,14 @@ fn auth_enveloped(
     alg: ContentEncryptionAlgorithm,
     with_attrs: bool,
 ) -> ContentInfo {
-    let mut builder = AuthEnvelopedDataBuilder::new(MESSAGE, alg).unwrap();
+    let env = software();
+    let mut builder = AuthEnvelopedDataBuilder::new(MESSAGE, env.content_encryptor(alg));
     if with_attrs {
         builder.auth_attrs(content_type_attrs());
     }
     builder
         .add_recipient(recipient(key))
-        .build_content_info(&software(), &mut rng())
+        .build_content_info(&mut rng())
         .unwrap()
 }
 
@@ -279,15 +278,28 @@ fn a_changed_authenticated_attribute_fails_authentication() {
 
 #[test]
 fn builders_refuse_the_other_kind_of_algorithm() {
+    let env = software();
+    let key = rsa_key();
     for alg in GCM {
         assert!(matches!(
-            EnvelopedDataBuilder::<Rng>::new(MESSAGE, alg),
+            enveloped_with(&env, &key, alg),
+            Err(Error::InvalidInput(_))
+        ));
+        assert!(matches!(
+            EncryptedDataBuilder::<Rng>::new(
+                MESSAGE,
+                &[0; 32][..alg.key_len()],
+                env.content_encryptor(alg)
+            )
+            .build(&mut rng()),
             Err(Error::InvalidInput(_))
         ));
     }
     for alg in CBC {
         assert!(matches!(
-            AuthEnvelopedDataBuilder::<Rng>::new(MESSAGE, alg),
+            AuthEnvelopedDataBuilder::new(MESSAGE, env.content_encryptor(alg))
+                .add_recipient(recipient(&key))
+                .build(&mut rng()),
             Err(Error::InvalidInput(_))
         ));
     }
@@ -295,10 +307,23 @@ fn builders_refuse_the_other_kind_of_algorithm() {
 
 #[test]
 fn a_message_needs_a_recipient() {
-    let result = EnvelopedDataBuilder::<Rng>::new(MESSAGE, ContentEncryptionAlgorithm::Aes128Cbc)
-        .unwrap()
-        .build(&software(), &mut rng());
-    assert!(matches!(result, Err(Error::InvalidInput(_))));
+    let env = software();
+    let enveloped = EnvelopedDataBuilder::<Rng>::new(
+        None,
+        MESSAGE,
+        env.content_encryptor(ContentEncryptionAlgorithm::Aes128Cbc),
+        None,
+    )
+    .unwrap()
+    .build_with_rng(&mut rng())
+    .map_err(Error::from);
+    assert!(matches!(enveloped, Err(Error::InvalidInput(_))));
+    let auth_enveloped = AuthEnvelopedDataBuilder::<Rng>::new(
+        MESSAGE,
+        env.content_encryptor(ContentEncryptionAlgorithm::Aes128Gcm),
+    )
+    .build(&mut rng());
+    assert!(matches!(auth_enveloped, Err(Error::InvalidInput(_))));
 }
 
 /// Declines everything, as a provider does for an algorithm its module lacks.
@@ -316,18 +341,15 @@ fn a_decline_passes_to_the_next_implementation_and_all_declining_declines() {
     let key = rsa_key();
     let mut env = CmsEnvironment::new();
     env.add_encrypt_content_callback(declines);
-    let declined = EnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes128Cbc)
-        .unwrap()
-        .add_recipient(recipient(&key))
-        .build(&env, &mut rng());
-    assert!(matches!(declined, Err(Error::Unrecognized)));
+    // cms's builder error carries only a message, so the decline arrives as its text.
+    let declined = enveloped_with(&env, &key, ContentEncryptionAlgorithm::Aes128Cbc);
+    assert!(
+        matches!(&declined, Err(Error::InvalidInput(m)) if *m == Error::Unrecognized.to_string()),
+        "{declined:?}"
+    );
 
     env.populate_software();
-    let ci = EnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes128Cbc)
-        .unwrap()
-        .add_recipient(recipient(&key))
-        .build_content_info(&env, &mut rng())
-        .unwrap();
+    let ci = enveloped_with(&env, &key, ContentEncryptionAlgorithm::Aes128Cbc).unwrap();
     assert_eq!(decrypt_enveloped(&key, &ci), MESSAGE);
 
     env.clear_encrypt_content_callbacks();
@@ -335,6 +357,81 @@ fn a_decline_passes_to_the_next_implementation_and_all_declining_declines() {
         env.encrypt_content(ContentEncryptionAlgorithm::Aes128Cbc, MESSAGE, None),
         Err(Error::Unrecognized)
     ));
+}
+
+fn encrypted(env: &CmsEnvironment, alg: ContentEncryptionAlgorithm, key: &[u8]) -> ContentInfo {
+    EncryptedDataBuilder::new(MESSAGE, key, env.content_encryptor(alg))
+        .build_content_info(&mut rng())
+        .unwrap()
+}
+
+fn shared_key(alg: ContentEncryptionAlgorithm) -> Vec<u8> {
+    (1..=alg.key_len() as u8).collect()
+}
+
+/// EncryptedData under a given key, decrypted with RustCrypto directly and through the
+/// environment.
+#[test]
+fn encrypted_data_round_trips_under_the_given_key() {
+    let env = software();
+    for alg in CBC {
+        let key = shared_key(alg);
+        let ci = encrypted(&env, alg, &key);
+        assert_eq!(ci.content_type, ID_ENCRYPTED_DATA);
+        let ed = EncryptedData::from_der(&ci.content.to_der().unwrap()).unwrap();
+        assert_eq!(ed.version, CmsVersion::V0);
+        assert_eq!(ed.enc_content_info.content_type, ID_DATA);
+        assert_eq!(ed.enc_content_info.content_enc_alg.oid, alg.oid());
+        let eci = &ed.enc_content_info;
+        let direct = match alg {
+            ContentEncryptionAlgorithm::Aes128Cbc => cbc_decrypt::<Aes128>(&key, eci),
+            ContentEncryptionAlgorithm::Aes192Cbc => cbc_decrypt::<Aes192>(&key, eci),
+            _ => cbc_decrypt::<Aes256>(&key, eci),
+        };
+        assert_eq!(direct, MESSAGE, "{alg:?}");
+        let (content_type, content) = env.decrypt_encrypted_data(&ci, &key).unwrap();
+        assert_eq!(content_type, ID_DATA);
+        assert_eq!(content.as_slice(), MESSAGE, "{alg:?}");
+    }
+}
+
+#[test]
+fn encrypted_data_records_its_content_type_and_unprotected_attributes() {
+    let env = software();
+    let alg = ContentEncryptionAlgorithm::Aes256Cbc;
+    let key = shared_key(alg);
+    let ci = EncryptedDataBuilder::new(MESSAGE, &key, env.content_encryptor(alg))
+        .content_type(ID_ENVELOPED_DATA)
+        .unprotected_attrs(content_type_attrs())
+        .build_content_info(&mut rng())
+        .unwrap();
+    let ed = EncryptedData::from_der(&ci.content.to_der().unwrap()).unwrap();
+    // RFC 5652, section 8: version 2 when there are unprotected attributes.
+    assert_eq!(ed.version, CmsVersion::V2);
+    assert_eq!(ed.unprotected_attrs, Some(content_type_attrs()));
+    let (content_type, content) = env.decrypt_encrypted_data(&ci, &key).unwrap();
+    assert_eq!(content_type, ID_ENVELOPED_DATA);
+    assert_eq!(content.as_slice(), MESSAGE);
+}
+
+#[test]
+fn encrypted_data_refuses_a_key_of_the_wrong_length_and_needs_an_implementation_taking_one() {
+    let env = software();
+    let alg = ContentEncryptionAlgorithm::Aes128Cbc;
+    let result = EncryptedDataBuilder::<Rng>::new(MESSAGE, &[0; 32], env.content_encryptor(alg))
+        .build(&mut rng());
+    assert!(matches!(result, Err(Error::InvalidInput(_))), "{result:?}");
+
+    // A bare function implements only key generation, so given a key it declines.
+    let mut env = CmsEnvironment::new();
+    env.add_encrypt_content_callback(certval_cms::encrypt_content_rust_crypto);
+    let result =
+        EncryptedDataBuilder::<Rng>::new(MESSAGE, &shared_key(alg), env.content_encryptor(alg))
+            .build(&mut rng());
+    assert!(
+        matches!(&result, Err(Error::InvalidInput(m)) if *m == Error::Unrecognized.to_string()),
+        "{result:?}"
+    );
 }
 
 /// Decrypts with `openssl cms -decrypt`, given the recipient's key. Skipped unless
@@ -380,6 +477,33 @@ fn openssl_decrypts_what_is_built_here() {
                 auth_enveloped(&key, alg, with_attrs),
             ));
         }
+    }
+    let env = software();
+    for alg in CBC {
+        let key = shared_key(alg);
+        let ci = encrypted(&env, alg, &key);
+        let input = dir.path().join("encrypted.der");
+        std::fs::write(&input, ci.to_der().unwrap()).unwrap();
+        let hex: String = key.iter().map(|b| format!("{b:02X}")).collect();
+        let output = Command::new(&openssl)
+            .args([
+                "cms",
+                "-EncryptedData_decrypt",
+                "-inform",
+                "DER",
+                "-binary",
+                "-in",
+            ])
+            .arg(&input)
+            .args(["-secretkey", &hex])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "openssl, EncryptedData {alg:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, MESSAGE, "EncryptedData {alg:?}");
     }
     for (name, ci) in messages {
         let decrypted = openssl_decrypt(

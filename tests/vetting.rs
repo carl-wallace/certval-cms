@@ -6,7 +6,7 @@ mod common;
 
 use certval::{CertificationPathSettings, PathValidationStatus, TimeOfInterest};
 use certval_cms::{
-    CertificateLookup, CmsEnvironment, ContentEncryptionAlgorithm, EnvelopedDataBuilder, Error,
+    content_info, CertificateLookup, CmsEnvironment, ContentEncryptionAlgorithm, Error,
     KeyAgreeRecipient, KeyAgreementAlgorithm, KeyTransRecipient, KeyTransportAlgorithm,
     KeyWrapAlgorithm, RecipientCertificateSource, SoftwareRecipientKey, Vetting,
 };
@@ -107,11 +107,14 @@ fn a_certificate_from_a_trusted_ca_is_validated_and_its_message_decrypts() {
     )
     .unwrap();
     assert!(matches!(r.vetting(), Vetting::Validated(_)));
-    let ci = EnvelopedDataBuilder::new(MESSAGE, ContentEncryptionAlgorithm::Aes128Cbc)
+    let encryptor = env.content_encryptor(ContentEncryptionAlgorithm::Aes128Cbc);
+    let enveloped_data = cms::builder::EnvelopedDataBuilder::new(None, MESSAGE, encryptor, None)
         .unwrap()
-        .add_recipient(r)
-        .build_content_info(&env, &mut rng())
+        .add_recipient_info(r)
+        .unwrap()
+        .build_with_rng(&mut rng())
         .unwrap();
+    let ci = content_info(const_oid::db::rfc5911::ID_ENVELOPED_DATA, &enveloped_data).unwrap();
     let credential =
         SoftwareRecipientKey::from_pkcs8_der(recipient.cert.clone(), &recipient.pkcs8).unwrap();
     let decrypted = env.decrypt_enveloped_data(&ci, Some(&credential)).unwrap();

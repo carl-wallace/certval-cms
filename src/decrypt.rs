@@ -1,10 +1,12 @@
-//! Decryption of EnvelopedData (RFC 5652, section 6) and AuthEnvelopedData (RFC 5083).
+//! Decryption of EnvelopedData (RFC 5652, section 6), AuthEnvelopedData (RFC 5083) and
+//! EncryptedData (RFC 5652, section 8).
 
 use alloc::{string::String, vec, vec::Vec};
 
 use cms::{
     authenveloped_data::{AuthAttributes, AuthEnvelopedData},
     content_info::ContentInfo,
+    encrypted_data::EncryptedData,
     enveloped_data::{
         EnvelopedData, KeyAgreeRecipientIdentifier, OriginatorIdentifierOrKey, RecipientIdentifier,
         RecipientInfo, RecipientInfos,
@@ -12,7 +14,7 @@ use cms::{
     kemri::{KemRecipientInfo, ID_ORI_KEM},
 };
 use const_oid::db::rfc5911::{
-    ID_CONTENT_TYPE, ID_CT_AUTH_ENVELOPED_DATA, ID_DATA, ID_ENVELOPED_DATA,
+    ID_CONTENT_TYPE, ID_CT_AUTH_ENVELOPED_DATA, ID_DATA, ID_ENCRYPTED_DATA, ID_ENVELOPED_DATA,
 };
 use const_oid::db::rfc5912::ID_EC_PUBLIC_KEY;
 use const_oid::ObjectIdentifier;
@@ -530,5 +532,32 @@ impl CmsEnvironment {
             credential: origin,
             auth_attrs,
         })
+    }
+
+    /// Decrypts an EncryptedData in a ContentInfo with `key`, the key the parties share, through the
+    /// registered [`DecryptContent`](crate::DecryptContent) implementations. Returns the
+    /// encryptedContentInfo's contentType and the content.
+    ///
+    /// EncryptedData's content encryption does not authenticate, so, as for EnvelopedData, a wrong
+    /// key is not always detected.
+    pub fn decrypt_encrypted_data(
+        &self,
+        content_info: &ContentInfo,
+        key: &[u8],
+    ) -> Result<(ObjectIdentifier, Zeroizing<Vec<u8>>)> {
+        if content_info.content_type != ID_ENCRYPTED_DATA {
+            return Err(Error::InvalidInput(alloc::format!(
+                "{} is not EncryptedData",
+                content_info.content_type
+            )));
+        }
+        let ed = EncryptedData::from_ber(&content_info.content.to_der()?)?;
+        let eci = ed.enc_content_info;
+        let ciphertext = eci.encrypted_content.as_ref().ok_or_else(|| {
+            Error::InvalidInput(String::from("detached content is not supported"))
+        })?;
+        let content =
+            self.decrypt_content(&eci.content_enc_alg, key, ciphertext.as_bytes(), None, None)?;
+        Ok((eci.content_type, content))
     }
 }
