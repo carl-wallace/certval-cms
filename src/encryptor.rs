@@ -1,4 +1,4 @@
-//! The bridge to cms's builder traits: [`EnvironmentContentEncryptor`], a cms
+//! The bridge to cms's builder traits: [`CmsContentEncryptor`], a cms
 //! [`ContentEncryptor`] whose encryption goes through a [`CmsEnvironment`], and the conversions
 //! between this crate's errors and cms's builder errors.
 
@@ -20,12 +20,12 @@ use crate::error::Error;
 /// The random number generator cms passes is not used: each implementation draws its keys, IVs
 /// and nonces from its own source.
 #[derive(Clone, Copy, Debug)]
-pub struct EnvironmentContentEncryptor<'e> {
+pub struct CmsContentEncryptor<'e> {
     env: &'e CmsEnvironment,
     alg: ContentEncryptionAlgorithm,
 }
 
-impl<'e> EnvironmentContentEncryptor<'e> {
+impl<'e> CmsContentEncryptor<'e> {
     /// The encryptor for `alg` through `env`.
     pub fn new(env: &'e CmsEnvironment, alg: ContentEncryptionAlgorithm) -> Self {
         Self { env, alg }
@@ -37,13 +37,13 @@ impl<'e> EnvironmentContentEncryptor<'e> {
     }
 }
 
-impl DynAssociatedOid for EnvironmentContentEncryptor<'_> {
+impl DynAssociatedOid for CmsContentEncryptor<'_> {
     fn oid(&self) -> ObjectIdentifier {
         self.alg.oid()
     }
 }
 
-impl<R: ?Sized> ContentEncryptor<R> for EnvironmentContentEncryptor<'_> {
+impl<R: ?Sized> ContentEncryptor<R> for CmsContentEncryptor<'_> {
     fn encrypt_content(
         &self,
         key: Option<&[u8]>,

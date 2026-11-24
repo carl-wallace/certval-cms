@@ -10,7 +10,7 @@ an increase to the minimum supported Rust version is not treated as a breaking c
   crate's `EnvelopedDataBuilder` and `RecipientInfoBuilder` are removed; `KeyTransRecipient`,
   `KeyAgreeRecipient` and `KemRecipient` implement cms's trait, and
   `CmsEnvironment::content_encryptor` gives a `ContentEncryptor` whose encryption goes through the
-  environment (`EnvironmentContentEncryptor`). `content_info` wraps what a builder makes.
+  environment (`CmsContentEncryptor`). `content_info` wraps what a builder makes.
 - `AuthEnvelopedDataBuilder` takes a `ContentEncryptor` rather than an algorithm and an environment.
   An algorithm that does not authenticate is refused when building.
 

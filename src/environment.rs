@@ -14,7 +14,7 @@ use crate::algorithms::{
 };
 use crate::content::{decrypt_content_rust_crypto, RustCryptoContentEncryption};
 
-use crate::encryptor::EnvironmentContentEncryptor;
+use crate::encryptor::CmsContentEncryptor;
 use crate::environment_traits::{
     ContentEncryptionOutput, DecryptContent, EncryptContent, EncryptKem, EncryptKeyAgreement,
     EncryptKeyTransport, KemOutput, KeyAgreeOutput, RecipientCertificateSource,
@@ -184,11 +184,8 @@ impl CmsEnvironment {
     /// through this environment, for cms's `EnvelopedDataBuilder` and this crate's
     /// [`AuthEnvelopedDataBuilder`](crate::AuthEnvelopedDataBuilder) and
     /// [`EncryptedDataBuilder`](crate::EncryptedDataBuilder).
-    pub fn content_encryptor(
-        &self,
-        alg: ContentEncryptionAlgorithm,
-    ) -> EnvironmentContentEncryptor<'_> {
-        EnvironmentContentEncryptor::new(self, alg)
+    pub fn content_encryptor(&self, alg: ContentEncryptionAlgorithm) -> CmsContentEncryptor<'_> {
+        CmsContentEncryptor::new(self, alg)
     }
 
     /// Registers a content decryption implementation after those already registered.

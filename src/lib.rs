@@ -105,7 +105,7 @@ pub use credential::{
     SingleRecipientCredential,
 };
 pub use decrypt::DecryptedContent;
-pub use encryptor::EnvironmentContentEncryptor;
+pub use encryptor::CmsContentEncryptor;
 pub use enveloped::{content_info, AuthEnvelopedDataBuilder, EncryptedDataBuilder};
 pub use environment::CmsEnvironment;
 pub use environment_traits::{
